@@ -1,3 +1,8 @@
+num_hm_segs_per_activity = 2
+iteration_num = 5000
+use_adjacent_hm = False
+epoch_name = "src/babel_0505_5set/babel-human3d-kl-mbvitv3nosw-3group-seed2024/checkpoint_cliplarge/50000_checkpoint.pt"
+
 import numpy as np
 import pandas as pd
 
@@ -65,12 +70,12 @@ setting_list = [
      "train_ratio": 1,
      "test_ratio": 1,
      "train_order": "left_part",
-     "test_order": "left_part", "iteration_num":1000,
+     "test_order": "left_part", "iteration_num": iteration_num,  # or 1000
      ## model
      "model_type": "mmCLIP_gpt_multi_brach_property_v3",
      ## pretrain and ft
      "if_use_babel_pretrain": True, "if_freeze_heatmap_encoder": False, "if_lora_ft": True,
-    "epoch_name": "src/babel_0505_5set/babel-human3d-kl-mbvitv3nosw-3group-seed2024/checkpoint_unseen/50000_checkpoint.pt",
+     "epoch_name": epoch_name,
 
      ## babel cotrain
      "if_babel_cotrain": False, "if_use_gpt": True, "aug_ratio": 1,
@@ -92,6 +97,8 @@ setting_list = [
      "if_few_shot": False,
      "if_linear_prob": False,
      "hm_type": [0, 1, 2],
+     "num_hm_segs_per_activity": num_hm_segs_per_activity,  # 1
+     "use_adjacent_hm": use_adjacent_hm,
      "train_sampling_gap": 8,
      "test_sampling_gap": 224,
      "crop_size": (256, 224),
@@ -120,12 +127,12 @@ setting_list = [
   "train_ratio": 1,
   "test_ratio": 1,
   "train_order": "left_part",
-  "test_order": "left_part", "iteration_num": 1000,
+  "test_order": "left_part", "iteration_num": iteration_num,
   ## model
   "model_type": "mmCLIP_gpt_multi_brach_property_v3",
   ## pretrain and ft
   "if_use_babel_pretrain": True, "if_freeze_heatmap_encoder": False, "if_lora_ft": True,
-  "epoch_name": "src/babel_0505_5set/babel-human3d-kl-mbvitv3nosw-3group-seed2024/checkpoint_unseen/50000_checkpoint.pt",
+  "epoch_name": epoch_name,
 
 
 
@@ -149,6 +156,8 @@ setting_list = [
   "if_few_shot": False,
   "if_linear_prob": False,
   "hm_type": [0, 1, 2],
+  "num_hm_segs_per_activity": num_hm_segs_per_activity,
+  "use_adjacent_hm": use_adjacent_hm,
   "train_sampling_gap": 8,
   "test_sampling_gap": 224,
   "crop_size": (256, 224),
@@ -177,12 +186,12 @@ setting_list = [
   "train_ratio": 1,
   "test_ratio": 1,
   "train_order": "left_part",
-  "test_order": "left_part", "iteration_num": 1000,
+  "test_order": "left_part", "iteration_num": iteration_num,
   ## model
   "model_type": "mmCLIP_gpt_multi_brach_property_v3",
   ## pretrain and ft
   "if_use_babel_pretrain": True, "if_freeze_heatmap_encoder": False, "if_lora_ft": True,
-  "epoch_name": "src/babel_0505_5set/babel-human3d-kl-mbvitv3nosw-3group-seed2024/checkpoint_unseen/50000_checkpoint.pt",
+  "epoch_name": epoch_name,
 
   ## babel cotrain
   "if_babel_cotrain": False, "if_use_gpt": True, "aug_ratio": 1,
@@ -204,7 +213,9 @@ setting_list = [
   "if_few_shot": False,
   "if_linear_prob": False,
   "hm_type": [0, 1, 2],
-  "train_sampling_gap": 8,
+  "num_hm_segs_per_activity": num_hm_segs_per_activity,
+  "use_adjacent_hm": use_adjacent_hm,
+  "train_sampling_gap": 8,  # similar idea to stride in CNNs?
   "test_sampling_gap": 224,
   "crop_size": (256, 224),
   "img_size": (224, 224),
@@ -214,10 +225,8 @@ setting_list = [
   "fs_start_index": 0,
   "fs_text_weight": 0.1,
   }]
-
- # everything past here is pure finetuning or fewshot 
-
 """
+ # everything past here is pure finetuning or fewshot 
 
  {"exp_setting": "mbvitv3-seen50klnosw",
   "num_ll": 1, "dim_ll": 64,

@@ -3,6 +3,9 @@ Fine-tune the larger CLIP model for more iterations because the model is larger 
 Try the pretrained CLIP model checkpoint in the research Google Folder.
 Try sentence-T5 and confirm Shuai's results.
 """
+"""
+9/12 Try many different checkpoints to identify best pretrained model checkpoint
+"""
 
 """
 Config file for model used during pretraining and fine-tuning.
@@ -22,6 +25,7 @@ import sys
 sys.path.append('.')
 from lib.VisionTransformer import VisionTransformer,Tent_ViT, ViT_wo_patch_embed, MB_ViT_v3, MB_ViT_v3_shareweight
 from timm.models.vision_transformer import VisionTransformer as timm_vit
+from sentence_transformers import SentenceTransformer
 try:
     from torchvision.transforms import InterpolationMode
     BICUBIC = InterpolationMode.BICUBIC

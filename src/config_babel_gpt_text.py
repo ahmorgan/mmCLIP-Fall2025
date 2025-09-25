@@ -77,10 +77,11 @@ setting_list_babel=[
     "test_ratio": 1,
     "train_order": "left_part",
     "test_order": "left_part",
-    "train_sampling_gap": 500,
+    "train_sampling_gap": 500,  # len of activity heatmap ?? unused during pretraining
     ##t2motion parameters
     "if_use_t2m": False,
     ## model
+    "num_hm_segs_per_activity": 1,  # 2
     "if_range_aug": True,
     "model_type": "mmCLIP_gpt_multi_brach_property_v3",
     "trial_list": trials_list,

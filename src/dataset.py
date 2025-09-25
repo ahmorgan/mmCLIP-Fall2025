@@ -327,7 +327,7 @@ class babel_dataset_gpt(Dataset):
                  dataset_list=["ACCAD", "BioMotionLab_NTroje", "CMU", "EKUT"],
                  gpt_data_location="./exp7-8/6_prompts",
                  crop_size=(224,256), img_size=(224,224), if_range_aug=True, if_use_gpt=True,
-                 if_use_img=False, aug_ratio=1):
+                 if_use_img=False, aug_ratio=1, num_hms_segs_per_activity=1):
         self.crop_size = crop_size
         self.img_size = img_size
         self.hm_text_list=[]
@@ -339,6 +339,7 @@ class babel_dataset_gpt(Dataset):
         self.if_use_gpt=if_use_gpt
         self.if_use_img=if_use_img
         self.aug_ratio = aug_ratio
+        self.num_hms_segs_per_activity=num_hms_segs_per_activity
         for dataset_name in dataset_list:
             with open("./{}/{}.pkl".format(label_dict_path, dataset_name), "rb") as f1:
                 self.label_dict[dataset_name]=pkl.load(f1)
@@ -400,37 +401,55 @@ class babel_dataset_gpt(Dataset):
             crop_size = hm_td.shape[1]
 
         # print(file_name, hm_td.shape[1])
-        rand_int=random.randint(0,hm_td.shape[1]-crop_size)
-        ##calculate labels
-        start_time=rand_int*self.stft_hop_length/128
-        end_time=(rand_int+ crop_size)*(self.stft_hop_length/128)
-        frame_raw_text=self.label_dict[dataset_name]["frame_raw_text_dict"][file_name][math.ceil(start_time):int(end_time)]
-        # unique_frame_raw_text=set(frame_raw_text)
-        unique_frame_raw_text,_ = remove_duplicates(list(frame_raw_text))
-        while "transition" in unique_frame_raw_text:
-            unique_frame_raw_text.remove("transition")
-        if len(unique_frame_raw_text)==0:
-            print(file_name)
-        unique_frame_raw_text, _ = remove_duplicates(unique_frame_raw_text)
-        unique_frame_raw_text=" and ".join(unique_frame_raw_text).lower()
-        ## now find the mapping
-        if self.if_use_gpt:
-            detailed_des=self.description_map[unique_frame_raw_text]
-            text_candidate_num=len(detailed_des)
-            text_candiate_index=random.randint(0,text_candidate_num-1)
-        crop_img_td = hm_td[128 - self.crop_size[0] // 2:128 + self.crop_size[0] // 2, rand_int:  rand_int+ self.crop_size[1]]
-        crop_img_td = cv2.resize(crop_img_td, self.img_size)
-        crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1
-        crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
-        if self.if_range_aug:
-            rand_int_range = random.randint(8, 15)
-            crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
-        crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
-        crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
-        crop_img_ta = hm_ta[:, rand_int:rand_int+ self.crop_size[1]]
-        crop_img_ta = cv2.resize(crop_img_ta, self.img_size)
-        crop_img_ta = 2*(crop_img_ta - np.min(crop_img_ta)) / (np.max(crop_img_ta) - np.min(crop_img_ta))-1
-        crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
+        rand_int_selection = list(range(0, hm_td.shape[1]-crop_size))
+        full_crop_img=np.array([])
+        for it in range(self.num_hms_segs_per_activity):
+            if not rand_int_selection:
+                print(f"Failed to get {self.num_hms_segs_per_activity} segments, not enough length")
+                exit(0)  # actually exits just the dataloader worker process
+            rand_int=random.choice(rand_int_selection)
+            for item in range(rand_int, rand_int+crop_size):
+                if item in rand_int_selection:
+                    rand_int_selection.remove(item)
+            ##calculate labels
+            start_time=rand_int*self.stft_hop_length/128
+            end_time=(rand_int+ crop_size)*(self.stft_hop_length/128)
+
+            frame_raw_text=self.label_dict[dataset_name]["frame_raw_text_dict"][file_name][math.ceil(start_time):int(end_time)]
+            # unique_frame_raw_text=set(frame_raw_text)
+            unique_frame_raw_text,_ = remove_duplicates(list(frame_raw_text))
+            while "transition" in unique_frame_raw_text:
+                unique_frame_raw_text.remove("transition")
+            if len(unique_frame_raw_text)==0:
+                print(file_name)
+            
+            unique_frame_raw_text, _ = remove_duplicates(unique_frame_raw_text)
+            unique_frame_raw_text=" and ".join(unique_frame_raw_text).lower()
+            ## now find the mapping
+            if self.if_use_gpt:
+                # these are the descriptions for each label within the frame, choose one at random as the representative for the frame
+                detailed_des=self.description_map[unique_frame_raw_text]
+                text_candidate_num=len(detailed_des)
+                text_candiate_index=random.randint(0,text_candidate_num-1)
+            
+            # as long as the crop size is (256, *), the first piece of indexing will evaluate to 0:256 (the full height of the heatmap)
+            crop_img_td = hm_td[128 - self.crop_size[0] // 2:128 + self.crop_size[0] // 2, rand_int:  rand_int+ self.crop_size[1]]
+            crop_img_td = cv2.resize(crop_img_td, self.img_size)
+            crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1  # normalize heatmap to values [-1, 1]
+
+            crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
+            if self.if_range_aug:
+                rand_int_range = random.randint(8, 15)
+                crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
+            crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
+            crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
+
+            crop_img_ta = hm_ta[:, rand_int:rand_int+ self.crop_size[1]]
+            crop_img_ta = cv2.resize(crop_img_ta, self.img_size)
+            crop_img_ta = 2*(crop_img_ta - np.min(crop_img_ta)) / (np.max(crop_img_ta) - np.min(crop_img_ta))-1
+
+            crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
+            full_crop_img=np.append([full_crop_img, [crop_img]], axis=1) if full_crop_img.size else np.array([crop_img])
 
         if self.if_use_img:
             ##get the most closeted rendered image
@@ -442,25 +461,30 @@ class babel_dataset_gpt(Dataset):
                 rendered_img = Image.open(rendered_img_path)
                 img_list.append(rendered_img)
 
-
         if self.if_use_gpt and self.if_use_img:
-            return (crop_img,
+            return (full_crop_img,
                     img_list,
                     detailed_des[text_candiate_index],
                     detailed_des[text_candiate_index])
         if self.if_use_gpt:
+            if self.num_hms_segs_per_activity == 1:
+                return (full_crop_img[0],
+                    detailed_des[text_candiate_index],
+                    detailed_des[text_candiate_index],
+                    detailed_des[text_candiate_index])
             # this one is returned during standard mmCLIP pretraining run
-            return (crop_img,  # heatmaps
+            # TODO fix logic for returning adjacent heatmaps --> done
+            return (full_crop_img,  # heatmaps
                     detailed_des[text_candiate_index],  # activity label descriptions
                     detailed_des[text_candiate_index],
                     detailed_des[text_candiate_index])
         if self.if_use_gpt==False and self.if_use_img:
-            return (crop_img,
+            return (full_crop_img,
                     img_list,
                     [unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text,unique_frame_raw_text],
                     unique_frame_raw_text)
 
-        return (crop_img,
+        return (full_crop_img,
                 unique_frame_raw_text,
                 [unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text],
                 unique_frame_raw_text)
@@ -473,7 +497,7 @@ class local_dataset(Dataset):
                  data_location="./Radar_data_collection/Mar_2024/data_0413/hm_dra_modified_length_0-100/",
                  gpt_data_location="./Radar_data_collection/Mar_2024/gpt_data_0505/",
                  crop_size=(224,384), img_size=(224,224),
-                 ratio=1.0, order="left_part", sampling_gap=8, if_range_aug=False):
+                 ratio=1.0, order="left_part", sampling_gap=8, if_range_aug=False, num_hm_segs_per_activity=1, use_adjacent_hm=False):
         self.if_range_aug=if_range_aug
 
         self.ori_label_2gt = {}
@@ -492,6 +516,8 @@ class local_dataset(Dataset):
         self.action_label_map = action_label_map
         self.action_label_map_inv = {v: k for k, v in self.action_label_map.items()}
         gpt_text_file_paths=glob.glob("{}/local_sample_02_no001.txt".format(gpt_data_location))
+        self.num_hm_segs_per_activity = num_hm_segs_per_activity
+        self.use_adjacent_hm = use_adjacent_hm
         self.description_list=[]#[[act_name, des_1, des_2, des_3, des_4], [], ...]
         for gpt_text_file_path in gpt_text_file_paths:
             single_description_list=read_gpt_data(gpt_text_file_path)
@@ -548,34 +574,74 @@ class local_dataset(Dataset):
                 img_ta = img_ori_ta[:, int(img_len_ori * ratio):]
             self.img_label_list.append([img_td, img_tr, img_ta, text, label])
         self.img_time_length = self.img_label_list[0][0].shape[1]
-        self.seg_number_per_trial = (self.img_time_length-self.img_size[1]+1) // self.sampling_gap
+        self.seg_number_per_trial = (self.img_time_length-self.img_size[1]+1) // self.sampling_gap  # number of segments possible per activity heatmap
         print("real dataset_length:",self.trial_size*self.seg_number_per_trial)
 
     def __getitem__(self, index):
-        trial_no=index//self.seg_number_per_trial
+        # During training, the dataloader randomizes the indices and gets the data using them
+        # Try randomly choosing the second heatmap in the pair for improved diversity during training
+        # Draw accuracy curve over iterations
+
+        trial_no=index//self.seg_number_per_trial  # determines which heatmap to use (one heatmap can yield multiple segments)
         img_td, img_tr, img_ta, text, label = self.img_label_list[trial_no]
+        assert len(text) == 1  # should be one text per heatmap (one activity being performed in the heatmap)
+        # print("Local dataset hm shape: ", img_td.shape)
         text_candidate_num=len(text)
         text_candiate_index=random.randint(0,text_candidate_num-1)
-        trial_index = index-trial_no*self.seg_number_per_trial
-        crop_img_td = img_td[128-self.crop_size[0]//2:128+self.crop_size[0]//2, trial_index*self.sampling_gap: trial_index*self.sampling_gap+self.crop_size[1]]
-        crop_img_td = cv2.resize(crop_img_td, self.img_size)
-        crop_img_td = 2*(crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td))-1
+        trial_index = index-trial_no*self.seg_number_per_trial  # where to start within the current activity given the index
+        
+        full_crop_img = np.array([])
+        windows_used = []  # used for debugging
+        num_hms_added = 0
+        for seg_num in range(1, self.num_hm_segs_per_activity+1):
+            if self.use_adjacent_hm:
+                # + (seg_num * self.crop_size[1]) chooses the next adjacent heatmap segment
+                hm_window = (trial_index*self.sampling_gap + ((seg_num-1)*self.crop_size[1]), 
+                            trial_index*self.sampling_gap + ((seg_num-1)*self.crop_size[1] + self.crop_size[1]))
+                if hm_window[1] > img_td.shape[1]:
+                    shift = (hm_window[1] - img_td.shape[1]) // self.crop_size[1]  # handle if hm_window[1]*2 > img_td.shape[1] 
+                    # use left adjacent hm segment instead
+                    hm_window = (trial_index*self.sampling_gap + (seg_num*self.crop_size[1] - (self.crop_size[1] * (shift + seg_num+1))),
+                                trial_index*self.sampling_gap + (seg_num*self.crop_size[1] - (self.crop_size[1] * (shift + seg_num))))
+            else: # randomly selected hm window (theoretically, this should perform better, because there are more possible training pairs when using random)
+                # (0, 2665) --> One activity
+                if seg_num == 1:
+                    # initial hm, should select window as if only selecting one hm segment
+                    hm_window = (trial_index*self.sampling_gap, trial_index*self.sampling_gap + self.crop_size[1])
+                else:
+                    # random hm segment outside of initial hm window 
+                    random_start_idx_left = random.randint(0, hm_window[0]-self.crop_size[1]-1) if hm_window[0]-self.crop_size[1]-1 > 0 else -1
+                    random_start_idx_right = random.randint(hm_window[0]+self.crop_size[1], img_td.shape[1]-self.crop_size[1]) if hm_window[0]+self.crop_size[1] < img_td.shape[1]-self.crop_size[1] else -1
+                    random_start_idx = random.choice([start for start in [random_start_idx_left, random_start_idx_right] if start != -1])
+                    hm_window = (random_start_idx, random_start_idx+self.crop_size[1])
+            num_hms_added += 1
+            crop_img_td = img_td[128-self.crop_size[0]//2:128+self.crop_size[0]//2, hm_window[0]:hm_window[1]]
+            crop_img_td = cv2.resize(crop_img_td, self.img_size)
+            crop_img_td = 2*(crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td))-1
 
-        ## need to do random tr augmentation here for sim, (also seen real?)
-        ##sim top pad 10-20, bot crop 10-15
+            ## need to do random tr augmentation here for sim, (also seen real?)
+            ##sim top pad 10-20, bot crop 10-15
 
-        crop_img_tr = img_tr[:, trial_index*self.sampling_gap: trial_index*self.sampling_gap+self.crop_size[1]]
-        if self.if_range_aug:
-            rand_int = random.randint(8, 15)
-            crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int, 0), crop_img_tr[:-rand_int]], axis=0)
-        crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
-        crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
-        crop_img_ta = img_ta[:, trial_index*self.sampling_gap: trial_index*self.sampling_gap+self.crop_size[1]]
-        crop_img_ta = cv2.resize(crop_img_ta, self.img_size)
-        crop_img_ta = 2*(crop_img_ta - np.min(crop_img_ta)) / (np.max(crop_img_ta) - np.min(crop_img_ta))-1
+            crop_img_tr = img_tr[:, hm_window[0]:hm_window[1]]
+            if self.if_range_aug:
+                rand_int = random.randint(8, 15)
+                crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int, 0), crop_img_tr[:-rand_int]], axis=0)
+            crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
+            crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
+            crop_img_ta = img_ta[:, hm_window[0]:hm_window[1]]
+            crop_img_ta = cv2.resize(crop_img_ta, self.img_size)
+            crop_img_ta = 2*(crop_img_ta - np.min(crop_img_ta)) / (np.max(crop_img_ta) - np.min(crop_img_ta))-1
 
-        crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
-        return crop_img, text[text_candiate_index], text[text_candiate_index], [label]
+            crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
+            full_crop_img=np.append(full_crop_img, [crop_img], axis=0) if full_crop_img.shape[0] else np.array([crop_img])
+            windows_used.append(hm_window)
+        assert len(full_crop_img) == num_hms_added
+        # print("Shape of cropped hms:", full_crop_img[0, :, :, :].shape)
+        if full_crop_img.shape[0] == 1:
+            return full_crop_img[0, :, :, :], text[text_candiate_index], text[text_candiate_index], [label]
+        # text does not need to be altered when num_hm_segs_per_activity > 1 
+        # first val is the originally used hm (hm used in vanilla mmclip), and the last val is the hms to optimize cosine sim over for intra-heatmap alignmetn
+        return full_crop_img[0, :, :, :], text[text_candiate_index], text[text_candiate_index], [label], full_crop_img[1:, :, :, :]
 
     def __len__(self):
         return self.trial_size*self.seg_number_per_trial
@@ -676,12 +742,35 @@ class local_dataset_fs(Dataset):
         return self.img_label_list
 
 
+def collate_ft_fn(batch):
+    b_img=[]  # hm
+    b_raw=[]  # text desc
+    b_proc=[]
+    b_act=[]  #label
+    b_img_adjacent=[]  # only used during real data fine tuning as additional intra-heatmap contrastive signal
+
+    for normalized_img, text_raw_label, text_proc_label, action_cats, adj_imgs in batch:##action cats may contains multiple variants
+        b_img.append(normalized_img)
+        b_raw.append(text_raw_label)
+        b_proc.append(text_proc_label)
+        b_act.append(action_cats)
+        b_img_adjacent.append(adj_imgs)
+
+    b_img = np.stack(b_img)
+    # b_raw = np.stack(b_raw)
+    # b_proc = np.stack(b_proc)
+    b_img_adjacent = np.stack(b_img_adjacent)
+
+    # print("Shapes inside finetuning collate fn (orig img, adj img)", b_img.shape, b_img_adjacent.shape)
+
+    return b_img, b_raw, b_proc, b_act, b_img_adjacent##not stack b_act beacuse one activity may have multiple labels for future entention
+
 
 def collate_fn(batch):
-    b_img=[]
-    b_raw=[]
+    b_img=[]  # hm
+    b_raw=[]  # text desc
     b_proc=[]
-    b_act=[]
+    b_act=[]  #label
 
     for normalized_img, text_raw_label, text_proc_label, action_cats in batch:##action cats may contains multiple variants
         b_img.append(normalized_img)

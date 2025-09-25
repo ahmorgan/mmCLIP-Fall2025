@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from model_gpt import mmCLIP_gpt_multi_brach_property_v3
-from dataset import collate_fn, babel_dataset_gpt, local_dataset, local_dataset_fs, HumanML3DDataset
+from dataset import collate_fn, collate_ft_fn, babel_dataset_gpt, local_dataset, local_dataset_fs, HumanML3DDataset
 import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.linear_model import LogisticRegression
@@ -184,11 +184,13 @@ if __name__=="__main__":
             setting_dict["used_train_classes_real"]=train_classes_real
             print("used_train_classes_real", train_classes_real)
 
+            # local_dataset (real fine-tuning data) is the only dataset used
             ds = local_dataset(trial_list=setting_dict["trial_list"], query_classes=train_classes_real,
                               data_location=setting_dict["local_train_data_location"],
                                gpt_data_location=setting_dict["gpt_data_location"],
                               crop_size=setting_dict["crop_size"],ratio=setting_dict["train_ratio"], order=setting_dict["train_order"],
-                               img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"])
+                               img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
+                               num_hm_segs_per_activity=setting_dict["num_hm_segs_per_activity"], use_adjacent_hm=setting_dict["use_adjacent_hm"])
             if setting_dict["if_babel_cotrain"]:
                 # ds_babel = babel_dataset(data_paths=setting_dict["babel_train_data_location"],
                 #                    dataset_list=setting_dict["dataset_list"], crop_size=setting_dict["crop_size"],
@@ -213,11 +215,17 @@ if __name__=="__main__":
                                               if_range_aug=setting_dict["if_range_aug"])
                 ds = ConcatDataset([ds, ds_humanml3d])
 
-            dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], shuffle=True, drop_last=True, num_workers=4, prefetch_factor=2)
+            use_intra_hm = setting_dict["num_hm_segs_per_activity"] > 1  # whether or not to compute and optimize contrastive loss between adjacent heatmaps
+
+            if use_intra_hm:
+                dl_train = DataLoader(ds, collate_fn=collate_ft_fn, batch_size=setting_dict["batch_size"], shuffle=True, drop_last=True, num_workers=1, prefetch_factor=4)
+            else:
+                dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], shuffle=True, drop_last=True, num_workers=4, prefetch_factor=2)
             dl_iter_train = iter(dl_train)
 
             test_classes_real = setting_dict["test_classes_real"]
             print("used_test_classes_real", test_classes_real)
+            # validation set should use default num_hm_segs_per_activity value of 1
             ds_val = local_dataset(trial_list=setting_dict["trial_list"], query_classes=test_classes_real,
                                   data_location=setting_dict["local_test_data_location"],
                                    gpt_data_location=setting_dict["gpt_data_location"],
@@ -271,6 +279,8 @@ if __name__=="__main__":
         if not os.path.isdir("./src/{}/{}/checkpoint_unseen".format(exp_name, exp_setting)):
             os.mkdir("./src/{}/{}/checkpoint_unseen".format(exp_name, exp_setting))
         test_acc_list=[]
+        all_intrahm_loss = []
+        all_hmtext_loss = []
         while iteration <= iteration_num:
             if iteration % 200 == 0 or (iteration%50==0 and iteration<600):
                 mmclip.eval()
@@ -370,41 +380,84 @@ if __name__=="__main__":
                 torch.save(mmclip.heatmap_encoder.state_dict(),
                         "./src/{}/{}/checkpoint_unseen/{:05d}_checkpoint_ft.pt"
                         .format(exp_name, exp_setting, iteration))
+                            
             try:
-                hms, _, texts, _ = next(dl_iter_train)
+                if use_intra_hm:
+                    hms, _, texts, _, hms_adj = next(dl_iter_train)  # we need to optimize contrastive loss between hms and hms_adj (hms_adjacent) as well
+                    if hms_adj.shape[1] == 1:
+                        hms_adj = np.reshape(hms_adj, newshape=(hms_adj.shape[0], hms_adj.shape[2], hms_adj.shape[3], hms_adj.shape[4]))
+                    else:
+                        raise NotImplementedError
+                else:
+                    hms, _, texts, _ = next(dl_iter_train)
             except StopIteration:
                 print("new epoch")
                 log_file.writelines("new epoch\n")
                 dl_iter_train = iter(dl_train)
-                hms, _, texts, _ = next(dl_iter_train)
+                if use_intra_hm:
+                    hms, _, texts, _, hms_adj = next(dl_iter_train)
+                    if hms_adj.shape[1] == 1:
+                        hms_adj = np.reshape(hms_adj, newshape=(hms_adj.shape[0], hms_adj.shape[2], hms_adj.shape[3], hms_adj.shape[4]))
+                    else:
+                        raise NotImplementedError
+                else:
+                    hms, _, texts, _ = next(dl_iter_train)
                 scheduler.step()
             if setting_dict["if_use_hm"]:
                 hms = torch.from_numpy(hms[:, hm_type, ...]).float().to(device)##
+                if use_intra_hm:
+                    hms_adj = torch.from_numpy(hms_adj[:, hm_type, ...]).float().to(device)
             else:
                 hms = torch.from_numpy(hms).float().to(device)
             mmclip.train()
             optimizer.zero_grad()
 
             hm_emds, scores = mmclip.cal_hm_features(hms)
+            if use_intra_hm:
+                hm_adj_emds, scores = mmclip.cal_hm_features(hms_adj)
+            
             text_emds = mmclip.cal_text_features_2d(texts)
             logit_scale = mmclip.logit_scale.exp()
             hm_features = hm_emds / hm_emds.norm(dim=-1, keepdim=True)
+            if use_intra_hm:
+                hm_adj_features = hm_adj_emds / hm_adj_emds.norm(dim=-1, keepdim=True)
             text_features = text_emds / text_emds.norm(dim=-1, keepdim=True)
 
-
-            all_loss=0
+            all_loss = 0
+            it_intrahm_loss = 0
+            it_hmtext_loss = 0
             for i in range(hm_features.shape[1]):
                 # this iterates over the 6 embeddings for each example in the batch: 5 attr + 1 aggregated
                 logits_hm_text = logit_scale * hm_features[:,i,:] @ text_features[:,i,:].t()  # compute cosine sim for each 16 embs against other 16 embs in correspoding modality
+                if use_intra_hm:
+                    logits_intra_hm = []
+                    logits_intra_hm.append(logit_scale * hm_features[:, i, :] @ hm_adj_features[:, i, :].t())  # heatmaps from the same activity should be similar
                 if setting_dict["loss_type"] == "ce":
                     ground_truth = torch.arange(len(hms)).to(device)
                     loss_imgs = loss_img(logits_hm_text, ground_truth)
                     loss_text=loss_img(logits_hm_text.t(), ground_truth)
-                    total_loss = (loss_imgs+loss_text)/2
+                    if use_intra_hm:
+                        # this loss should also be symmetric, right?
+                        # contrastive loss between two semantically similar heatmaps
+                        loss_intra_hm = loss_img(sim_matrix, ground_truth)
+                        loss_intra_hm += loss_img(sim_matrix.t(), ground_truth)
+                        loss_intra_hm /= 2
+                        total_loss = (loss_imgs+loss_text+loss_intra_hm)/3
+                    else:
+                        total_loss = (loss_imgs+loss_text)/2
                 elif setting_dict["loss_type"] == "kl":
-                    ground_truth = torch.tensor(gen_label(np.array(texts)[:,0]), dtype=hm_features.dtype, device=device)  # 16x16 identity matrix
+                    ground_truth = torch.tensor(gen_label(np.array(texts)[:,0]), dtype=hm_features.dtype, device=device)  # 16x16 array of 1 when labels match
                     loss_hm_text = loss_KL(logits_hm_text, ground_truth)
-                    total_loss = loss_hm_text
+                    it_hmtext_loss += loss_hm_text
+                    if use_intra_hm:
+                        loss_intra_hm = 0
+                        for sim_matrix in logits_intra_hm:
+                            loss_intra_hm += loss_KL(sim_matrix, ground_truth)  # you can use the same ground truth here because hms and hms_adj will always have the same label
+                        loss_intra_hm /= len(logits_intra_hm)
+                        total_loss = (loss_hm_text+loss_intra_hm)/2
+                        it_intrahm_loss += loss_intra_hm
+                    else:
+                        total_loss = loss_hm_text
                 elif setting_dict["loss_type"] == "cos":
                     total_loss=loss_cos(text_features[:,i,:], hm_features[:,i,:])
                 elif setting_dict["loss_type"] == "mse":
@@ -415,6 +468,10 @@ if __name__=="__main__":
             all_loss.backward()
             optimizer.step()
 
+            # will be used to plot the loss over iterations
+            all_intrahm_loss.append(it_intrahm_loss.cpu().item()/6)
+            all_hmtext_loss.append(it_hmtext_loss.cpu().item()/6)
+
             if iteration % 200 == 0:
                 # for line in logits_per_image.softmax(dim=1).detach().cpu().numpy():
                 #     print(line)
@@ -422,3 +479,23 @@ if __name__=="__main__":
                 log_file.writelines("iteration:{}, loss:{:5f}\n".format(iteration, total_loss.item()))
                 log_file.flush()
             iteration += 1
+
+        # outside of the training loop now
+        if use_intra_hm:
+            all_intrahm_avg = list(np.convolve(all_intrahm_loss, np.ones(5) / 5, "valid"))  # clever trick using convolution to take a moving average
+            all_intrahm_avg.extend(all_intrahm_loss[-4:])  # we can't take the 5-window moving average at the last four elements, just fill them in with the original values
+            plt.plot(all_intrahm_avg)
+            plt.title("Intra-Heatmap Contrastive Loss (5it Moving Average)")
+            plt.ylabel("Loss")
+            plt.xlabel("Iteration")
+            plt.savefig("./src/zero-shot-mmCLIP-all/" + exp_setting + "/loss_plot_intrahm.png")
+            plt.clf()
+        all_hmtext_avg = list(np.convolve(all_hmtext_loss, np.ones(5) / 5, "valid"))
+        all_hmtext_avg.extend(all_hmtext_loss[-4:])
+        plt.plot(all_hmtext_avg)
+        plt.title("Heatmap to Text Contrastive Loss (5it Moving Average)")
+        plt.ylabel("Loss")
+        plt.xlabel("Iteration")
+        plt.savefig("./src/zero-shot-mmCLIP-all/" + exp_setting + "/loss_plot_hmtext.png")
+        plt.clf()
+

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from model_gpt import mmCLIP_gpt_multi_brach_property_v3
-from dataset import collate_fn, babel_dataset_gpt, local_dataset, HumanML3DDataset
+from dataset import collate_fn, collate_ft_fn, babel_dataset_gpt, local_dataset, HumanML3DDataset
 import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from torch.utils.data import Dataset
@@ -185,6 +185,7 @@ if __name__ == "__main__":
                                    if_use_img=setting_dict["if_use_img"])
             ds=ConcatDataset([ds, ds_babel])
         if setting_dict['if_use_sim_local']:
+            # NOT USED DURING PRETRAINING
             """
             Testing dataset consisting of signal heatmaps and corresponding text activity label descriptions
             Unused during training, used as unseen testing data
@@ -196,7 +197,7 @@ if __name__ == "__main__":
                                crop_size=setting_dict["crop_size"], ratio=setting_dict["train_ratio"],
                                order=setting_dict["train_order"],
                                img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
-                               if_range_aug=setting_dict["if_range_aug"])
+                               if_range_aug=setting_dict["if_range_aug"], num_hm_segs_per_activity=setting_dict["num_hm_segs_per_activity"])
             ds = ConcatDataset([ds, ds_local])
         if setting_dict["if_use_humanml3d"]:
             """
@@ -216,8 +217,14 @@ if __name__ == "__main__":
         if setting_dict["if_use_t2m"]:
             pass
 
-        dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], shuffle=True,
-                              drop_last=True, num_workers=4, prefetch_factor=2)
+        use_intra_hm = setting_dict["num_hm_segs_per_activity"] > 1
+
+        if use_intra_hm:
+            dl_train = DataLoader(ds, collate_fn=collate_ft_fn, batch_size=setting_dict["batch_size"], shuffle=True,
+                                drop_last=True, num_workers=4, prefetch_factor=2)
+        else:
+            dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], shuffle=True,
+                                drop_last=True, num_workers=4, prefetch_factor=2)
         dl_iter_train = iter(dl_train)
 
         test_class_list = setting_dict["test_class_list"]
@@ -231,8 +238,8 @@ if __name__ == "__main__":
                                    ratio=setting_dict["test_ratio"], order=setting_dict["test_order"],
                                    sampling_gap=setting_dict["test_sampling_gap"])
             dl_val = DataLoader(ds_val, collate_fn=collate_fn, batch_size=10, shuffle=False, drop_last=False,
-                                num_workers=4,
-                                prefetch_factor=2)
+                            num_workers=1,
+                            prefetch_factor=1)
             ds_dl_val_list.append([ds_val, dl_val])
 
         # Set up log file and model checkpoint files
@@ -288,6 +295,7 @@ if __name__ == "__main__":
                             ## get prob and class label
                             logit_scale = mmclip.logit_scale.exp()
                             # inference: dot product between heatmap embedding and candidate text label description embeddings
+                            # to get cosine sim matrix
                             logits_per_image = logit_scale * eval_hm_feature[:,-1,:] @ eval_text_feature[:,-1,:].t()
                             # logits_per_image = 100 * eval_hm_feature @ eval_text_feature.t()
                             # after softmax, the the topk probs are the model's predictions
