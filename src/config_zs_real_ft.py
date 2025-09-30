@@ -1,7 +1,8 @@
-num_hm_segs_per_activity = 2
+num_hm_segs_per_activity = 1
 iteration_num = 5000
 use_adjacent_hm = False
-epoch_name = "src/babel_0505_5set/babel-human3d-kl-mbvitv3nosw-3group-seed2024/checkpoint_cliplarge/50000_checkpoint.pt"
+use_dynamic_similarity_matching = True
+epoch_name = "src/babel_0505_5set/babel-human3d-kl-mbvitv3nosw-3group-seed2024/checkpoint_unseen/50000_checkpoint.pt"
 
 import numpy as np
 import pandas as pd
@@ -99,6 +100,7 @@ setting_list = [
      "hm_type": [0, 1, 2],
      "num_hm_segs_per_activity": num_hm_segs_per_activity,  # 1
      "use_adjacent_hm": use_adjacent_hm,
+     "use_dynamic_similarity_matching": use_dynamic_similarity_matching,
      "train_sampling_gap": 8,
      "test_sampling_gap": 224,
      "crop_size": (256, 224),
@@ -158,6 +160,7 @@ setting_list = [
   "hm_type": [0, 1, 2],
   "num_hm_segs_per_activity": num_hm_segs_per_activity,
   "use_adjacent_hm": use_adjacent_hm,
+  "use_dynamic_similarity_matching": use_dynamic_similarity_matching,
   "train_sampling_gap": 8,
   "test_sampling_gap": 224,
   "crop_size": (256, 224),
@@ -215,6 +218,7 @@ setting_list = [
   "hm_type": [0, 1, 2],
   "num_hm_segs_per_activity": num_hm_segs_per_activity,
   "use_adjacent_hm": use_adjacent_hm,
+  "use_dynamic_similarity_matching": use_dynamic_similarity_matching,
   "train_sampling_gap": 8,  # similar idea to stride in CNNs?
   "test_sampling_gap": 224,
   "crop_size": (256, 224),

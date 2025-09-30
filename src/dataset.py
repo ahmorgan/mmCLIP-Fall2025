@@ -327,7 +327,7 @@ class babel_dataset_gpt(Dataset):
                  dataset_list=["ACCAD", "BioMotionLab_NTroje", "CMU", "EKUT"],
                  gpt_data_location="./exp7-8/6_prompts",
                  crop_size=(224,256), img_size=(224,224), if_range_aug=True, if_use_gpt=True,
-                 if_use_img=False, aug_ratio=1, num_hms_segs_per_activity=1):
+                 if_use_img=False, aug_ratio=1):
         self.crop_size = crop_size
         self.img_size = img_size
         self.hm_text_list=[]
@@ -339,7 +339,6 @@ class babel_dataset_gpt(Dataset):
         self.if_use_gpt=if_use_gpt
         self.if_use_img=if_use_img
         self.aug_ratio = aug_ratio
-        self.num_hms_segs_per_activity=num_hms_segs_per_activity
         for dataset_name in dataset_list:
             with open("./{}/{}.pkl".format(label_dict_path, dataset_name), "rb") as f1:
                 self.label_dict[dataset_name]=pkl.load(f1)
@@ -401,55 +400,45 @@ class babel_dataset_gpt(Dataset):
             crop_size = hm_td.shape[1]
 
         # print(file_name, hm_td.shape[1])
-        rand_int_selection = list(range(0, hm_td.shape[1]-crop_size))
-        full_crop_img=np.array([])
-        for it in range(self.num_hms_segs_per_activity):
-            if not rand_int_selection:
-                print(f"Failed to get {self.num_hms_segs_per_activity} segments, not enough length")
-                exit(0)  # actually exits just the dataloader worker process
-            rand_int=random.choice(rand_int_selection)
-            for item in range(rand_int, rand_int+crop_size):
-                if item in rand_int_selection:
-                    rand_int_selection.remove(item)
-            ##calculate labels
-            start_time=rand_int*self.stft_hop_length/128
-            end_time=(rand_int+ crop_size)*(self.stft_hop_length/128)
+        rand_int = random.randint(0, hm_td.shape[1]-crop_size)
+        ##calculate labels
+        start_time=rand_int*self.stft_hop_length/128
+        end_time=(rand_int+ crop_size)*(self.stft_hop_length/128)
 
-            frame_raw_text=self.label_dict[dataset_name]["frame_raw_text_dict"][file_name][math.ceil(start_time):int(end_time)]
-            # unique_frame_raw_text=set(frame_raw_text)
-            unique_frame_raw_text,_ = remove_duplicates(list(frame_raw_text))
-            while "transition" in unique_frame_raw_text:
-                unique_frame_raw_text.remove("transition")
-            if len(unique_frame_raw_text)==0:
-                print(file_name)
-            
-            unique_frame_raw_text, _ = remove_duplicates(unique_frame_raw_text)
-            unique_frame_raw_text=" and ".join(unique_frame_raw_text).lower()
-            ## now find the mapping
-            if self.if_use_gpt:
-                # these are the descriptions for each label within the frame, choose one at random as the representative for the frame
-                detailed_des=self.description_map[unique_frame_raw_text]
-                text_candidate_num=len(detailed_des)
-                text_candiate_index=random.randint(0,text_candidate_num-1)
-            
-            # as long as the crop size is (256, *), the first piece of indexing will evaluate to 0:256 (the full height of the heatmap)
-            crop_img_td = hm_td[128 - self.crop_size[0] // 2:128 + self.crop_size[0] // 2, rand_int:  rand_int+ self.crop_size[1]]
-            crop_img_td = cv2.resize(crop_img_td, self.img_size)
-            crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1  # normalize heatmap to values [-1, 1]
+        frame_raw_text=self.label_dict[dataset_name]["frame_raw_text_dict"][file_name][math.ceil(start_time):int(end_time)]
+        # unique_frame_raw_text=set(frame_raw_text)
+        unique_frame_raw_text,_ = remove_duplicates(list(frame_raw_text))
+        while "transition" in unique_frame_raw_text:
+            unique_frame_raw_text.remove("transition")
+        if len(unique_frame_raw_text)==0:
+            print(file_name)
+        
+        unique_frame_raw_text, _ = remove_duplicates(unique_frame_raw_text)
+        unique_frame_raw_text=" and ".join(unique_frame_raw_text).lower()
+        ## now find the mapping
+        if self.if_use_gpt:
+            # these are the descriptions for each label within the frame, choose one at random as the representative for the frame
+            detailed_des=self.description_map[unique_frame_raw_text]
+            text_candidate_num=len(detailed_des)
+            text_candiate_index=random.randint(0,text_candidate_num-1)
+        
+        # as long as the crop size is (256, *), the first piece of indexing will evaluate to 0:256 (the full height of the heatmap)
+        crop_img_td = hm_td[128 - self.crop_size[0] // 2:128 + self.crop_size[0] // 2, rand_int:  rand_int+ self.crop_size[1]]
+        crop_img_td = cv2.resize(crop_img_td, self.img_size)
+        crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1  # normalize heatmap to values [-1, 1]
 
-            crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
-            if self.if_range_aug:
-                rand_int_range = random.randint(8, 15)
-                crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
-            crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
-            crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
+        crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
+        if self.if_range_aug:
+            rand_int_range = random.randint(8, 15)
+            crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
+        crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
+        crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
 
-            crop_img_ta = hm_ta[:, rand_int:rand_int+ self.crop_size[1]]
-            crop_img_ta = cv2.resize(crop_img_ta, self.img_size)
-            crop_img_ta = 2*(crop_img_ta - np.min(crop_img_ta)) / (np.max(crop_img_ta) - np.min(crop_img_ta))-1
+        crop_img_ta = hm_ta[:, rand_int:rand_int+ self.crop_size[1]]
+        crop_img_ta = cv2.resize(crop_img_ta, self.img_size)
+        crop_img_ta = 2*(crop_img_ta - np.min(crop_img_ta)) / (np.max(crop_img_ta) - np.min(crop_img_ta))-1
 
-            crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
-            full_crop_img=np.append([full_crop_img, [crop_img]], axis=1) if full_crop_img.size else np.array([crop_img])
+        crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
 
         if self.if_use_img:
             ##get the most closeted rendered image
@@ -462,29 +451,22 @@ class babel_dataset_gpt(Dataset):
                 img_list.append(rendered_img)
 
         if self.if_use_gpt and self.if_use_img:
-            return (full_crop_img,
+            return (crop_img,
                     img_list,
                     detailed_des[text_candiate_index],
                     detailed_des[text_candiate_index])
         if self.if_use_gpt:
-            if self.num_hms_segs_per_activity == 1:
-                return (full_crop_img[0],
-                    detailed_des[text_candiate_index],
-                    detailed_des[text_candiate_index],
-                    detailed_des[text_candiate_index])
-            # this one is returned during standard mmCLIP pretraining run
-            # TODO fix logic for returning adjacent heatmaps --> done
-            return (full_crop_img,  # heatmaps
+            return (crop_img,  # heatmaps
                     detailed_des[text_candiate_index],  # activity label descriptions
                     detailed_des[text_candiate_index],
                     detailed_des[text_candiate_index])
         if self.if_use_gpt==False and self.if_use_img:
-            return (full_crop_img,
+            return (crop_img,
                     img_list,
                     [unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text,unique_frame_raw_text],
                     unique_frame_raw_text)
 
-        return (full_crop_img,
+        return (crop_img,
                 unique_frame_raw_text,
                 [unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text],
                 unique_frame_raw_text)

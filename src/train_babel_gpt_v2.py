@@ -67,16 +67,35 @@ class MSE_Loss(nn.Module):
         return loss
 
 
-def gen_label(labels):
+def gen_label(labels, text_features=None):
     """
-    Given a list of activity labels, convert it to a one-hot encoded matrix of label column vectors.
+    Given a list of activity labels (texts associated with the hms in a batch), convert it to a one-hot encoded matrix of label column vectors.
+
+    Since we are using KL-divergence during pretraining, the ground truth vector may havem multiple positive pairs.
+
+    This function has been altered to include dynamic similarity matching, i.e. the ground truth similarity matrix
+
+         hm  hm  hm
+    text CS  1   CS
+    text 1   CS  CS 
+    text CS  CS  1    etc.
+
+    where CS for every entry is the cosime similarity of the text matched with the hm and the jth text
     """
     num = len(labels)
     gt = np.zeros(shape=(num, num))
+    # k is the column and i is the row of the gt matrix here
     for i, label in enumerate(labels):
+        match_idx = list(labels).index(label)
         for k in range(num):
+            # the hm/text pairs should still be '1' in the ground truth matrix
             if labels[k] == label:
                 gt[i, k] = 1
+            elif text_features is not None:
+                # text feats should be batch_size * 6 * emb_dim - using aggregated embedding for cosine sim here
+                gt[i, k] = text_features[match_idx, :] @ text_features[k, :]  # cosine sim of label i and hm k; embeddings will have already been normalized, so cs is just a dot product
+        gt[i] = (gt[i] - gt[i].min()) / (gt[i].max() - gt[i].min())  # normalize them
+
     return gt
 
 
@@ -197,7 +216,7 @@ if __name__ == "__main__":
                                crop_size=setting_dict["crop_size"], ratio=setting_dict["train_ratio"],
                                order=setting_dict["train_order"],
                                img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
-                               if_range_aug=setting_dict["if_range_aug"], num_hm_segs_per_activity=setting_dict["num_hm_segs_per_activity"])
+                               if_range_aug=setting_dict["if_range_aug"])
             ds = ConcatDataset([ds, ds_local])
         if setting_dict["if_use_humanml3d"]:
             """
@@ -236,7 +255,7 @@ if __name__ == "__main__":
                                    gpt_data_location=setting_dict["gpt_data_location"],
                                    crop_size=setting_dict["crop_size"], img_size=setting_dict["img_size"],
                                    ratio=setting_dict["test_ratio"], order=setting_dict["test_order"],
-                                   sampling_gap=setting_dict["test_sampling_gap"])
+                                   sampling_gap=setting_dict["test_sampling_gap"])  # intrahm data turned off by default
             dl_val = DataLoader(ds_val, collate_fn=collate_fn, batch_size=10, shuffle=False, drop_last=False,
                             num_workers=1,
                             prefetch_factor=1)
@@ -263,6 +282,7 @@ if __name__ == "__main__":
         for i in range(len(ds_dl_val_list)):
             test_acc_list.append([])
 
+        all_hmtext_loss = []
         while iteration <= iteration_num:
             """
             MAIN TRAINING LOOP
@@ -369,6 +389,7 @@ if __name__ == "__main__":
             # text_features should also include the attr+agg embeddings for the nearest neighbor text description
 
             all_loss = 0
+            it_hmtext_loss = 0
             for i in range(hm_features.shape[1]):
                 logits_hm_text = logit_scale * hm_features[:, i, :] @ text_features[:, i, :].t()  # dot product between the ith 5 attr embs and aggr emb
                 if setting_dict["loss_type"] == "ce":
@@ -384,9 +405,15 @@ if __name__ == "__main__":
                         loss_hm_img = loss_ce(logits_per_hm_img, ground_truth)
                         total_loss+= setting_dict["img_loss_ratio"]*loss_hm_img
                 elif setting_dict["loss_type"] == "kl":
-                    ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype,
-                                                device=device)
+                    if setting_dict["use_dynamic_similarity_matching"]:
+                        text_embs_for_gt = text_features.detach().cpu().numpy()
+                        ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0], text_features=text_embs_for_gt[:, i, :]), dtype=hm_features.dtype,
+                                                        device=device)
+                    else:
+                        ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype,
+                                                        device=device)
                     loss_hm_text = loss_KL(logits_hm_text, ground_truth)
+                    it_hmtext_loss += loss_hm_text
                     total_loss = loss_hm_text
                     if setting_dict["if_use_img"] and i==hm_features.shape[1]-1:
                         r_imgs_embds = mmclip.cal_img_features(r_imgs)
@@ -410,9 +437,20 @@ if __name__ == "__main__":
             all_loss.backward()  # Backpropagate through the model weights using differentiable loss function
             optimizer.step()  # Update weights using Adam gradient descent optimizer
 
+            all_hmtext_loss.append(it_hmtext_loss.cpu().item()/6)
+
             if iteration % 200 == 0:
                 # for line in logits_per_image.softmax(dim=1).detach().cpu().numpy():
                 #     print(line)
                 print("iteration:{}, loss:{:5f}".format(iteration, total_loss.item()))
                 log_file.writelines("iteration:{}, loss:{:5f}\n".format(iteration, total_loss.item()))
             iteration += 1
+
+        all_hmtext_avg = list(np.convolve(all_hmtext_loss, np.ones(5) / 5, "valid"))
+        all_hmtext_avg.extend(all_hmtext_loss[-4:])
+        plt.plot(all_hmtext_avg)
+        plt.title("Heatmap to Text Contrastive Loss (5it Moving Average)")
+        plt.ylabel("Loss")
+        plt.xlabel("Iteration")
+        plt.savefig("./src/babel_0505_5set/loss_plot_hmtext_pt.png")
+        plt.clf()

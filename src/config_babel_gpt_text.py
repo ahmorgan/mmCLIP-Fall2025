@@ -2,6 +2,8 @@
 Config file for pretraining run (train_babel_gpt_v2.py).
 """
 
+use_dynamic_similarity_matching = True
+
 import numpy as np
 import pandas as pd
 def load_sync_list(infilename):
@@ -81,7 +83,7 @@ setting_list_babel=[
     ##t2motion parameters
     "if_use_t2m": False,
     ## model
-    "num_hm_segs_per_activity": 1,  # 2
+    "num_hm_segs_per_activity": 1,  # only available during ft as of now
     "if_range_aug": True,
     "model_type": "mmCLIP_gpt_multi_brach_property_v3",
     "trial_list": trials_list,
@@ -92,6 +94,7 @@ setting_list_babel=[
     "if_use_hm": True,
     "if_use_hm_proj": False, "if_use_text_proj": False,
     "if_use_text_att": True, "if_use_hm_att": True, "if_use_img_att": False,
+    "use_dynamic_similarity_matching": use_dynamic_similarity_matching,
     "hm_type": [0, 1, 2],
     "batch_size": 16,
     "loss_type": "kl",

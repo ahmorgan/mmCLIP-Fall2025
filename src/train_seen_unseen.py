@@ -51,14 +51,6 @@ class MSE_Loss(nn.Module):
     def forward(self, prediction, label):
         loss = self.error_metric(prediction, label)
         return loss
-def gen_label(labels):
-    num = len(labels)
-    gt = np.zeros(shape=(num,num))
-    for i, label in enumerate(labels):
-        for k in range(num):
-            if labels[k] == label:
-                gt[i,k] = 1
-    return gt
 class KLLoss(nn.Module):
     def __init__(self):
         super().__init__()
@@ -72,7 +64,36 @@ class KLLoss(nn.Module):
         loss = self.error_metric(probs1, probs2) #* batch_size
         return loss
 
+def gen_label(labels, text_features=None):
+    """
+    Given a list of activity labels (texts associated with the hms in a batch), convert it to a one-hot encoded matrix of label column vectors.
 
+    Since we are using KL-divergence during pretraining, the ground truth vector may havem multiple positive pairs.
+
+    This function has been altered to include dynamic similarity matching, i.e. the ground truth similarity matrix
+
+         hm  hm  hm
+    text CS  1   CS
+    text 1   CS  CS 
+    text CS  CS  1    etc.
+
+    where CS for every entry is the cosime similarity of the text matched with the hm and the jth text
+    """
+    num = len(labels)
+    gt = np.zeros(shape=(num, num))
+    # k is the column and i is the row of the gt matrix here
+    for i, label in enumerate(labels):
+        match_idx = list(labels).index(label)
+        for k in range(num):
+            # the hm/text pairs should still be '1' in the ground truth matrix
+            if labels[k] == label:
+                gt[i, k] = 1
+            elif text_features is not None:
+                # text feats should be batch_size * 6 * emb_dim - using aggregated embedding for cosine sim here
+                gt[i, k] = text_features[match_idx, :] @ text_features[k, :]  # cosine sim of label i and hm k; embeddings will have already been normalized, so cs is just a dot product
+        gt[i] =  (gt[i] - gt[i].min()) / (gt[i].max() - gt[i].min())  # normalize them
+
+    return gt
 
 np.set_printoptions(suppress=True)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -446,7 +467,14 @@ if __name__=="__main__":
                     else:
                         total_loss = (loss_imgs+loss_text)/2
                 elif setting_dict["loss_type"] == "kl":
-                    ground_truth = torch.tensor(gen_label(np.array(texts)[:,0]), dtype=hm_features.dtype, device=device)  # 16x16 array of 1 when labels match
+                    text_embs_for_gt = None
+                    if setting_dict["use_dynamic_similarity_matching"]:
+                        text_embs_for_gt = text_features.detach().cpu().numpy()
+                        ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0], text_features=text_embs_for_gt[:, i, :]), dtype=hm_features.dtype,
+                                                        device=device)
+                    else:
+                        ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype,
+                                                        device=device)
                     loss_hm_text = loss_KL(logits_hm_text, ground_truth)
                     it_hmtext_loss += loss_hm_text
                     if use_intra_hm:
@@ -469,7 +497,8 @@ if __name__=="__main__":
             optimizer.step()
 
             # will be used to plot the loss over iterations
-            all_intrahm_loss.append(it_intrahm_loss.cpu().item()/6)
+            if use_intra_hm:
+                all_intrahm_loss.append(it_intrahm_loss.cpu().item()/6)
             all_hmtext_loss.append(it_hmtext_loss.cpu().item()/6)
 
             if iteration % 200 == 0:
