@@ -1,4 +1,5 @@
 import os
+import pickle
 import random
 # os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import sys
@@ -11,6 +12,10 @@ from dataset import collate_fn, collate_ft_fn, babel_dataset_gpt, local_dataset,
 import numpy as np
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.linear_model import LogisticRegression
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+import seaborn as sns
+import pandas as pd
 import cv2
 from tqdm import tqdm
 # from config_zs_real_signal_seen import setting_list
@@ -91,9 +96,17 @@ def gen_label(labels, text_features=None):
             elif text_features is not None:
                 # text feats should be batch_size * 6 * emb_dim - using aggregated embedding for cosine sim here
                 gt[i, k] = text_features[match_idx, :] @ text_features[k, :]  # cosine sim of label i and hm k; embeddings will have already been normalized, so cs is just a dot product
-        gt[i] =  (gt[i] - gt[i].min()) / (gt[i].max() - gt[i].min())  # normalize them
+        # gt[i] =  (gt[i] - gt[i].min()) / (gt[i].max() - gt[i].min())  # normalize them
 
     return gt
+
+def gen_category_label(category_names):
+    gt_cat = np.zeros(shape=(len(category_names), len(category_names)))
+    for i in range(len(category_names)):
+        for k in range(len(category_names)):
+            if category_names[k] == category_names[i]:
+                gt_cat[i, k] = 1
+    return gt_cat
 
 np.set_printoptions(suppress=True)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -127,12 +140,13 @@ if __name__=="__main__":
                 assert "Please provide a valid model_type"
             elif setting_dict["model_type"]=="mmCLIP_gpt_multi_brach_property_v3":
                 mmclip = mmCLIP_gpt_multi_brach_property_v3(proj_head_dim=64, if_use_hm_proj=setting_dict["if_use_hm_proj"],
-                                       if_use_text_proj=setting_dict["if_use_text_proj"],
-                                       if_use_text_att=setting_dict["if_use_text_att"],
-                                       if_use_hm_att=setting_dict["if_use_hm_att"],
-                                       if_use_hm=setting_dict["if_use_hm"],
-                                       device=device,
-                                       in_channels=len(hm_type)).to(device)
+                                    if_use_text_proj=setting_dict["if_use_text_proj"],
+                                    if_use_text_att=setting_dict["if_use_text_att"],
+                                    if_use_hm_att=setting_dict["if_use_hm_att"],
+                                    if_use_hm=setting_dict["if_use_hm"],
+                                    device=device,
+                                    in_channels=len(hm_type),
+                                    if_use_hmtext_cross_attn=setting_dict["use_hmtext_cross_attention"]).to(device)
             elif setting_dict["model_type"]=="mmCLIP_gpt_multi_brach_property_with_image":
                 assert "Please provide a valid model_type"
             else:
@@ -175,7 +189,7 @@ if __name__=="__main__":
                 lora_model = get_peft_model(mmclip.heatmap_encoder3, config)
                 lora_model = get_peft_model(mmclip.heatmap_encoder4, config)
             elif (setting_dict["model_type"]=="mmCLIP_gpt_multi_brach_property"
-                  or setting_dict["model_type"]=="mmCLIP_gpt_multi_brach_property_with_image"):
+                or setting_dict["model_type"]=="mmCLIP_gpt_multi_brach_property_with_image"):
                 lora_model = get_peft_model(mmclip.heatmap_encoder, config)#do not need a return
             elif setting_dict["model_type"]=="mmCLIP_gpt_multi_brach_property_v3":
                 lora_model = get_peft_model(mmclip.heatmap_encoder, config)#do not need a return
@@ -187,8 +201,29 @@ if __name__=="__main__":
             else:
                 raise NotImplementedError
             # print_trainable_parameters(lora_model)
-        optimizer = torch.optim.Adam([{'params': mmclip.parameters(), 'lr':setting_dict["lr"]}])
+
+        use_muon = setting_dict["use_muon"]
+
+        if use_muon:
+            adam_params = []
+            muon_params = []
+
+            for name, p in mmclip.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if p.dim() == 2:
+                    muon_params.append(p)
+                else:
+                    adam_params.append(p)
+
+            optimizer = torch.optim.Adam([{'params': adam_params, 'lr':setting_dict["lr"]}])
+            optimizer_muon = torch.optim.Muon(muon_params)
+            scheduler_muon = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_muon, T_max=0.001)
+        else:
+            optimizer = torch.optim.Adam([{'params': mmclip.parameters(), 'lr':setting_dict["lr"]}])
+
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+        
         loss_KL = KLLoss()
         loss_img=CE_Loss()
         loss_cos=Cos_loss()
@@ -207,33 +242,33 @@ if __name__=="__main__":
 
             # local_dataset (real fine-tuning data) is the only dataset used
             ds = local_dataset(trial_list=setting_dict["trial_list"], query_classes=train_classes_real,
-                              data_location=setting_dict["local_train_data_location"],
-                               gpt_data_location=setting_dict["gpt_data_location"],
-                              crop_size=setting_dict["crop_size"],ratio=setting_dict["train_ratio"], order=setting_dict["train_order"],
-                               img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
-                               num_hm_segs_per_activity=setting_dict["num_hm_segs_per_activity"], use_adjacent_hm=setting_dict["use_adjacent_hm"])
+                            data_location=setting_dict["local_train_data_location"],
+                            gpt_data_location=setting_dict["gpt_data_location"],
+                            crop_size=setting_dict["crop_size"],ratio=setting_dict["train_ratio"], order=setting_dict["train_order"],
+                            img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
+                            num_hm_segs_per_activity=setting_dict["num_hm_segs_per_activity"], use_adjacent_hm=setting_dict["use_adjacent_hm"])
             if setting_dict["if_babel_cotrain"]:
                 # ds_babel = babel_dataset(data_paths=setting_dict["babel_train_data_location"],
                 #                    dataset_list=setting_dict["dataset_list"], crop_size=setting_dict["crop_size"],
                 #                    img_size=setting_dict["img_size"])
                 ds_babel = babel_dataset_gpt(data_paths=setting_dict["babel_train_data_location"],
-                                       label_dict_path=setting_dict["label_dict_path"],
-                                       dataset_list=setting_dict["dataset_list"],
-                                       gpt_data_location=setting_dict["babel_gpt_data_location"],
-                                       crop_size=setting_dict["crop_size"],
-                                       img_size=setting_dict["img_size"],
-                                       if_range_aug=setting_dict["if_range_aug"],
-                                       if_use_gpt=setting_dict["if_use_gpt"],
-                                       aug_ratio=setting_dict["aug_ratio"])
+                                    label_dict_path=setting_dict["label_dict_path"],
+                                    dataset_list=setting_dict["dataset_list"],
+                                    gpt_data_location=setting_dict["babel_gpt_data_location"],
+                                    crop_size=setting_dict["crop_size"],
+                                    img_size=setting_dict["img_size"],
+                                    if_range_aug=setting_dict["if_range_aug"],
+                                    if_use_gpt=setting_dict["if_use_gpt"],
+                                    aug_ratio=setting_dict["aug_ratio"])
                 ds = ConcatDataset([ds, ds_babel])
             if setting_dict["if_humanml3d_cotrain"]:
                 ds_humanml3d=HumanML3DDataset(data_paths=setting_dict["humanml3d_train_data_location"],
-                                              text_paths=setting_dict["humanml3d_text_paths"],
-                                              csv_path=setting_dict["humanml3d_cvs_paths"],
-                                              dataset_list=setting_dict["dataset_list"],
-                                              crop_size=setting_dict["crop_size"],
-                                              img_size=setting_dict["img_size"], aug_ratio=setting_dict["aug_ratio"],
-                                              if_range_aug=setting_dict["if_range_aug"])
+                                            text_paths=setting_dict["humanml3d_text_paths"],
+                                            csv_path=setting_dict["humanml3d_cvs_paths"],
+                                            dataset_list=setting_dict["dataset_list"],
+                                            crop_size=setting_dict["crop_size"],
+                                            img_size=setting_dict["img_size"], aug_ratio=setting_dict["aug_ratio"],
+                                            if_range_aug=setting_dict["if_range_aug"])
                 ds = ConcatDataset([ds, ds_humanml3d])
 
             use_intra_hm = setting_dict["num_hm_segs_per_activity"] > 1  # whether or not to compute and optimize contrastive loss between adjacent heatmaps
@@ -248,18 +283,18 @@ if __name__=="__main__":
             print("used_test_classes_real", test_classes_real)
             # validation set should use default num_hm_segs_per_activity value of 1
             ds_val = local_dataset(trial_list=setting_dict["trial_list"], query_classes=test_classes_real,
-                                  data_location=setting_dict["local_test_data_location"],
-                                   gpt_data_location=setting_dict["gpt_data_location"],
-                                   crop_size=setting_dict["crop_size"],img_size=setting_dict["img_size"],
-                                   ratio=setting_dict["test_ratio"], order=setting_dict["test_order"], sampling_gap=setting_dict["test_sampling_gap"])
+                                data_location=setting_dict["local_test_data_location"],
+                                gpt_data_location=setting_dict["gpt_data_location"],
+                                crop_size=setting_dict["crop_size"],img_size=setting_dict["img_size"],
+                                ratio=setting_dict["test_ratio"], order=setting_dict["test_order"], sampling_gap=setting_dict["test_sampling_gap"])
             dl_val = DataLoader(ds_val, collate_fn=collate_fn, batch_size=10, shuffle=False, drop_last=False, num_workers=4, prefetch_factor=2)
 
             if setting_dict["if_few_shot"] or setting_dict["if_linear_prob"]:
                 ds_fs=local_dataset_fs(trial_list=setting_dict["trial_list"], query_classes=test_classes_real,
-                                  data_location=setting_dict["local_test_data_location"],
-                                   gpt_data_location=setting_dict["gpt_data_location"],
-                                   crop_size=setting_dict["crop_size"],img_size=setting_dict["img_size"],
-                                   ratio=setting_dict["test_ratio"], order=setting_dict["test_order"], sampling_gap=setting_dict["fs_sampling_gap"],
+                                data_location=setting_dict["local_test_data_location"],
+                                gpt_data_location=setting_dict["gpt_data_location"],
+                                crop_size=setting_dict["crop_size"],img_size=setting_dict["img_size"],
+                                ratio=setting_dict["test_ratio"], order=setting_dict["test_order"], sampling_gap=setting_dict["fs_sampling_gap"],
                                 start_index=setting_dict["fs_start_index"], few_shot_sample=setting_dict["fs_sample"])
                 fs_hm_list=ds_fs.get_eval()
 
@@ -267,20 +302,20 @@ if __name__=="__main__":
         else:
             train_classes_real = setting_dict["train_classes_real"]
             ds = local_dataset_pc(trial_list=setting_dict["trial_list"], query_classes=train_classes_real,
-                               data_location=setting_dict["local_train_data_location"],
-                               gpt_data_location=setting_dict["gpt_data_location"],
-                               pc_crop_size=setting_dict["pc_crop_size"],ratio=setting_dict["train_ratio"], order=setting_dict["train_order"],
-                               sampling_gap=setting_dict["train_sampling_gap"])
+                            data_location=setting_dict["local_train_data_location"],
+                            gpt_data_location=setting_dict["gpt_data_location"],
+                            pc_crop_size=setting_dict["pc_crop_size"],ratio=setting_dict["train_ratio"], order=setting_dict["train_order"],
+                            sampling_gap=setting_dict["train_sampling_gap"])
             dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], shuffle=True,
-                                  drop_last=True, num_workers=4, prefetch_factor=2)
+                                drop_last=True, num_workers=4, prefetch_factor=2)
             dl_iter_train = iter(dl_train)
 
             test_classes_real = setting_dict["test_classes_real"]
             ds_val = local_dataset_pc(trial_list=setting_dict["trial_list"], query_classes=test_classes_real,
-                                   data_location=setting_dict["local_test_data_location"],
-                                   gpt_data_location=setting_dict["gpt_data_location"],
-                                   pc_crop_size=setting_dict["pc_crop_size"],
-                                   ratio=setting_dict["test_ratio"], order=setting_dict["test_order"], sampling_gap=setting_dict["test_sampling_gap"])
+                                data_location=setting_dict["local_test_data_location"],
+                                gpt_data_location=setting_dict["gpt_data_location"],
+                                pc_crop_size=setting_dict["pc_crop_size"],
+                                ratio=setting_dict["test_ratio"], order=setting_dict["test_order"], sampling_gap=setting_dict["test_sampling_gap"])
             dl_val = DataLoader(ds_val, collate_fn=collate_fn, batch_size=10, shuffle=False, drop_last=False,
                                 num_workers=4, prefetch_factor=2)
             if setting_dict["if_few_shot"]:
@@ -294,7 +329,7 @@ if __name__=="__main__":
             os.mkdir("./src/{}/{}/".format(exp_name, exp_setting))
         if not os.path.isdir("./src/{}/{}/confusion_matrix/".format(exp_name, exp_setting)):
             os.mkdir("./src/{}/{}/confusion_matrix/".format(exp_name, exp_setting))
-        log_file = open("./src/{}/{}/log_unseen.txt".format(exp_name, exp_setting), "w+")
+        log_file = open("./src/{}/{}/log_unseen_{}.txt".format(exp_name, exp_setting, exp_setting[-1]), "w+")
         for key, value in setting_dict.items():
             log_file.writelines("{}:  {}\n".format(key, value))
         if not os.path.isdir("./src/{}/{}/checkpoint_unseen".format(exp_name, exp_setting)):
@@ -302,12 +337,60 @@ if __name__=="__main__":
         test_acc_list=[]
         all_intrahm_loss = []
         all_hmtext_loss = []
+
+        if setting_dict["use_hmtext_cross_attention"]:
+            all_ca_loss = []
+
+        def create_tsne(hm_features, labels):
+            pca = PCA(n_components=50)
+            pca_feats = pca.fit_transform(hm_features)
+            tsne = TSNE(n_components=2)
+            tsne_feats = tsne.fit_transform(pca_feats)
+            assert len(tsne_feats) == len(labels), f"{len(labels)}, {len(tsne_feats)}"
+
+            df = pd.DataFrame({
+                'TSNE-1': tsne_feats[:, 0],
+                'TSNE-2': tsne_feats[:, 1],
+                'label': labels
+            })
+
+            # Create the visualization
+            plt.figure(figsize=(10, 8))
+
+            # Method 1: Using scatterplot with hue for labels
+            sns.scatterplot(
+                data=df,
+                x='TSNE-1',
+                y='TSNE-2',
+                hue='label',
+                palette='tab10',
+                s=50,
+                alpha=0.7,
+                edgecolor='none'
+            )
+
+            plt.title('TSNE Visualization', fontsize=16, fontweight='bold')
+            plt.xlabel('TSNE Dimension 1', fontsize=12)
+            plt.ylabel('TSNE Dimension 2', fontsize=12)
+            plt.legend(title='Label', bbox_to_anchor=(1.05, 1), loc='upper left')
+            plt.tight_layout()
+            plt.savefig("./src/zero-shot-mmCLIP-all/" + exp_setting + f"/tsne_{exp_setting[-1]}.png")
+            plt.clf()
+
+        use_cat = setting_dict["use_category_alignment"]
+
+        if use_cat:
+            cat_centroids = dict(pickle.load(open("./src/cat_centroids.pkl", "rb")))
+            cat_names = list(cat_centroids.keys())
+            cat_aggr_matrix = torch.stack([cat_centroids[cat][0] for cat in cat_centroids.keys()]).to(device)
+
         while iteration <= iteration_num:
             if iteration % 200 == 0 or (iteration%50==0 and iteration<600):
                 mmclip.eval()
                 top1_correct = 0
                 top2_correct = 0
                 total = 0
+
                 with torch.no_grad():
                     label_list = []
                     pred_list = []
@@ -336,8 +419,8 @@ if __name__=="__main__":
                         fs_hm_emds = torch.stack(fs_hm_emds)
                     elif setting_dict["if_linear_prob"]:
                         assert "linear prob not implemented yet"
-                    tsne_hm_list=[]
-                    tsne_label_list=[]
+                    if iteration == iteration_num: 
+                        tsne_features_hm = []
                     for i, (hms, _, _, labels) in tqdm(enumerate(dl_val), desc="Computing batch"):
                         if setting_dict["if_use_hm"]:
                             eval_hm_array = torch.from_numpy(hms[:, hm_type, ...]).float().to(device)
@@ -347,6 +430,8 @@ if __name__=="__main__":
                         eval_hm_emd, scores = mmclip.cal_hm_features(eval_hm_array)
                         ## normalize
                         eval_hm_feature = eval_hm_emd / eval_hm_emd.norm(dim=-1, keepdim=True)
+                        if iteration == iteration_num:
+                            tsne_features_hm.extend(eval_hm_feature[:,-1,:].detach().cpu().numpy())
                         ## get prob and class label
                         logit_scale = mmclip.logit_scale.exp()
                         logits_hm_text = logit_scale * eval_hm_feature[:,-1,:] @ eval_text_feature[:,-1,:].t()
@@ -376,6 +461,8 @@ if __name__=="__main__":
                                     top2_correct += 1
                             else:
                                 top2_correct=0
+                    if iteration == iteration_num: # iteration_num:
+                        create_tsne(tsne_features_hm, label_list)
                     cm = confusion_matrix(label_list, pred_list)
                     # cm=cm.astype('float')/cm.astype('float').sum(axis=1)[:,np.newaxis]
                     # np.savetxt("./src/{}/{}/confusion_matrix/{:05d}_cm.csv".
@@ -392,12 +479,12 @@ if __name__=="__main__":
                 test_acc_list.append(top1_correct / total)
                 acc_quantile=np.quantile(test_acc_list, .90)
                 print("top1 acc:{:5f}, top2 acc:{:5f}, 90 quantile acc:{:5f}, max acc:{:5f}"
-                      .format(top1_correct / total,top2_correct / total, acc_quantile, max(test_acc_list)))
+                    .format(top1_correct / total,top2_correct / total, acc_quantile, max(test_acc_list)))
                 log_file.writelines(
                     "Iteration {}, top1 acc:{:5f}, top2 acc:{:5f}, 90 quantile acc:{:5f}, max acc:{:5f} \n"
                     .format(iteration, top1_correct / total,top2_correct / total, acc_quantile, max(test_acc_list)))
                 log_file.flush()
-            if setting_dict["if_save_model"] and iteration % 1000 == 0:
+            if setting_dict["if_save_model"] and iteration % 5000 == 0:
                 torch.save(mmclip.heatmap_encoder.state_dict(),
                         "./src/{}/{}/checkpoint_unseen/{:05d}_checkpoint_ft.pt"
                         .format(exp_name, exp_setting, iteration))
@@ -424,6 +511,9 @@ if __name__=="__main__":
                 else:
                     hms, _, texts, _ = next(dl_iter_train)
                 scheduler.step()
+                if use_muon:
+                    scheduler_muon.step()
+            
             if setting_dict["if_use_hm"]:
                 hms = torch.from_numpy(hms[:, hm_type, ...]).float().to(device)##
                 if use_intra_hm:
@@ -432,27 +522,84 @@ if __name__=="__main__":
                 hms = torch.from_numpy(hms).float().to(device)
             mmclip.train()
             optimizer.zero_grad()
+            if use_muon:
+                optimizer_muon.zero_grad()
 
             hm_emds, scores = mmclip.cal_hm_features(hms)
             if use_intra_hm:
                 hm_adj_emds, scores = mmclip.cal_hm_features(hms_adj)
+            if setting_dict["use_hmtext_cross_attention"]:
+                # these should be aligned
+                # expected shape: [16x56x768]  (batch_size x no. hm tokens x emb_dim)
+                hm_token_emds, hm_crossmodal_emds = mmclip.cal_hm_tokens_and_crossmodal_hm_features(texts, hms)
             
             text_emds = mmclip.cal_text_features_2d(texts)
             logit_scale = mmclip.logit_scale.exp()
+            if setting_dict["use_hmtext_cross_attention"]:
+                logit_scale_ca = mmclip.logit_scale_ca.exp()
+            if use_intra_hm:
+                logit_scale_intrahm = mmclip.logit_scale_intrahm.exp()
             hm_features = hm_emds / hm_emds.norm(dim=-1, keepdim=True)
             if use_intra_hm:
                 hm_adj_features = hm_adj_emds / hm_adj_emds.norm(dim=-1, keepdim=True)
             text_features = text_emds / text_emds.norm(dim=-1, keepdim=True)
 
+            if use_cat:
+                if iteration > 1000:
+                    setting_dict["lambda"] -= (1 / (iteration_num - 1000))
+            
+            if setting_dict["use_hmtext_cross_attention"] and not use_cat:
+                """
+                if iteration > 0:
+                    setting_dict["lambda"] += (1 / (iteration_num))
+                """
+
+            if use_cat:
+                # idea: the category structure of the finetuning dataset is different from that of the pretraining dataset.
+                # the structure is getting destroyed during finetuning, and is causing a nosedive in accuracy.
+                # to fix this, we assign each text to a category embedding from the pretraining dataset, and then
+                # align the heatmap embeddings to these "artificial" category embeddings as well during finetuning. 
+                # this should force the model to preserve the original category structure.
+                logit_scale_cat = mmclip.logit_scale_cat.exp()
+
+                artificial_category_names = []
+                artificial_category_embs = []
+                for i in range(text_features.shape[0]):
+                    aggr_emb = text_features[i, 0, :]
+                    sims = cat_aggr_matrix @ aggr_emb
+                    best_cat_idx = torch.argmax(sims).cpu().item() 
+                    artificial_category_embs.append(cat_centroids[cat_names[best_cat_idx]])  # 6 x 768
+                    artificial_category_names.append(cat_names[best_cat_idx])
+                artificial_category_embs = torch.stack(artificial_category_embs).to(device)  # batch_size x 6 x 768
+
+            hm_crossattention_loss = 0
+
+            if setting_dict["use_hmtext_cross_attention"]:
+                # 56x56 identity matrix as ground truth for crossmodal attention
+                ground_truth_ca = torch.tensor(np.eye(hm_crossmodal_emds.shape[1]), dtype=hm_features.dtype, device=device)
+
+                for j in range(hm_crossmodal_emds.shape[0]):
+                    # The hmtext cross attention embedding tensor is of shape (16, 55, 768) and does not (should not) use attribute decomposition.
+                    # It's easier conceptually to just iterate over the first dimension and compute the logits for each example in the batch separately, and
+                    # then just average them. 
+
+                    # (55x768) @ (768x55) = 55x55 - sim between each hm token and its crossmodal counterpart derived from the text tokens
+                    logits_hm_text_ca = logit_scale_ca * hm_crossmodal_emds[j, :, :] @ hm_token_emds[j, :, :].t()         
+
+                    hm_crossattention_loss += loss_KL(logits_hm_text_ca, ground_truth_ca)    
+
             all_loss = 0
             it_intrahm_loss = 0
             it_hmtext_loss = 0
+
             for i in range(hm_features.shape[1]):
                 # this iterates over the 6 embeddings for each example in the batch: 5 attr + 1 aggregated
                 logits_hm_text = logit_scale * hm_features[:,i,:] @ text_features[:,i,:].t()  # compute cosine sim for each 16 embs against other 16 embs in correspoding modality
                 if use_intra_hm:
                     logits_intra_hm = []
-                    logits_intra_hm.append(logit_scale * hm_features[:, i, :] @ hm_adj_features[:, i, :].t())  # heatmaps from the same activity should be similar
+                    logits_intra_hm.append(logit_scale_intrahm * hm_adj_features[:, i, :] @ hm_features[:, i, :].t())  # heatmaps from the same activity should be similar
+                    logits_adjhm_text = []
+                    logits_adjhm_text.append(logit_scale_intrahm * hm_adj_features[:, i, :] @ text_features[:, i, :].t())
                 if setting_dict["loss_type"] == "ce":
                     ground_truth = torch.arange(len(hms)).to(device)
                     loss_imgs = loss_img(logits_hm_text, ground_truth)
@@ -465,13 +612,19 @@ if __name__=="__main__":
                         loss_intra_hm /= 2
                         total_loss = (loss_imgs+loss_text+loss_intra_hm)/3
                     else:
-                        total_loss = (loss_imgs+loss_text)/2
+                        # total_loss = (loss_imgs+loss_text)/2
+                        total_loss = loss_text
                 elif setting_dict["loss_type"] == "kl":
-                    text_embs_for_gt = None
                     if setting_dict["use_dynamic_similarity_matching"]:
                         text_embs_for_gt = text_features.detach().cpu().numpy()
                         ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0], text_features=text_embs_for_gt[:, i, :]), dtype=hm_features.dtype,
                                                         device=device)
+                    elif use_cat:
+                        ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype,
+                                                        device=device)
+                        cat_ground_truth = torch.tensor(gen_category_label(artificial_category_names), dtype=hm_features.dtype, device=device)
+                        logits_category = logit_scale_cat * artificial_category_embs[:, i, :] @ hm_features[:, i, :].t()
+                        loss_category = loss_KL(logits_category, cat_ground_truth)
                     else:
                         ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype,
                                                         device=device)
@@ -481,9 +634,19 @@ if __name__=="__main__":
                         loss_intra_hm = 0
                         for sim_matrix in logits_intra_hm:
                             loss_intra_hm += loss_KL(sim_matrix, ground_truth)  # you can use the same ground truth here because hms and hms_adj will always have the same label
-                        loss_intra_hm /= len(logits_intra_hm)
-                        total_loss = (loss_hm_text+loss_intra_hm)/2
+                        """
+                        for sim_matrix_adjhm_text in logits_adjhm_text:
+                            loss_intra_hm += loss_KL(sim_matrix_adjhm_text, ground_truth)
+                        """
+                        loss_intra_hm /= len(logits_intra_hm)  # for future use, if we ever want to align more adjacent heatmaps
+                        # loss_intra_hm /= 2 # equal split between intra-hm and adjhm-text losses
+                        total_loss = (1.0 - setting_dict["lambda"]) * loss_hm_text + setting_dict["lambda"] * loss_intra_hm
                         it_intrahm_loss += loss_intra_hm
+                    elif setting_dict["use_hmtext_cross_attention"] and use_cat:
+                        total_loss = loss_category
+                    elif use_cat:
+                        # TODO investigate whether this loss should be added separately (for some reason)
+                        total_loss = (1.0 - setting_dict["lambda"]) * loss_hm_text + setting_dict["lambda"] * loss_category
                     else:
                         total_loss = loss_hm_text
                 elif setting_dict["loss_type"] == "cos":
@@ -493,8 +656,15 @@ if __name__=="__main__":
                 else:
                     assert "Please provide a valid loss function"
                 all_loss+=total_loss
+            if setting_dict["use_hmtext_cross_attention"]:
+                if iteration%200 == 0:
+                    print("token alignment loss weight: ", setting_dict["lambda"])
+                    print("hmtext loss weight: ", 1.0 - setting_dict["lambda"])
+                all_loss = (1.0 - setting_dict["lambda"]) * all_loss + setting_dict["lambda"] * hm_crossattention_loss
             all_loss.backward()
             optimizer.step()
+            if use_muon:
+                optimizer_muon.step()
 
             # will be used to plot the loss over iterations
             if use_intra_hm:
@@ -504,9 +674,19 @@ if __name__=="__main__":
             if iteration % 200 == 0:
                 # for line in logits_per_image.softmax(dim=1).detach().cpu().numpy():
                 #     print(line)
-                print("iteration:{}, loss:{:5f}".format(iteration, total_loss.item()))
-                log_file.writelines("iteration:{}, loss:{:5f}\n".format(iteration, total_loss.item()))
+                print("iteration:{}, hmtext loss:{:5f}".format(iteration, loss_hm_text.item()))  # aggr emb hmtext loss
+                log_file.writelines("iteration:{}, loss:{:5f}\n".format(iteration, loss_hm_text.item()))
+                if use_cat:
+                    print("category alignment loss:{:5f}".format(loss_category.cpu().item()))
+                if setting_dict["use_hmtext_cross_attention"]:
+                    print("iteration:{}, token alignment loss:{:5f}".format(iteration, hm_crossattention_loss.cpu().item() / hms.shape[0]))
+                if use_intra_hm:
+                    print("iteration:{}, intrahm loss:{:5f}".format(iteration, it_intrahm_loss.cpu().item()/6))
+                    log_file.writelines("iteration:{}, intrahm loss:{:5f}\n".format(iteration, it_intrahm_loss.cpu().item()/6))
                 log_file.flush()
+
+            if setting_dict["use_hmtext_cross_attention"]:
+                all_ca_loss.append(hm_crossattention_loss.cpu().item() / hms.shape[0])
             iteration += 1
 
         # outside of the training loop now

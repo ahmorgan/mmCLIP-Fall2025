@@ -20,6 +20,7 @@ except ImportError:
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 sys.path.append(".")
 # random.seed(50)
+np.random.seed(2024)
 action_label_map={
             "jump rope":0, "jump":1, "jumping Jack":2, "sit on a chair and stand up":3, "lunge":4,
             "bow":5, "standing forward bend":6, "drink water":7, "kick":8, "throw":9,
@@ -147,7 +148,7 @@ class babel_dataset(Dataset):
             crop_size = hm_td.shape[1]
 
         # print(file_name, hm_td.shape[1])
-        rand_int=random.randint(0,hm_td.shape[1]-crop_size)
+        rand_int=np.random.randint(0,hm_td.shape[1]-crop_size)
         ##calculate labels
         start_time=rand_int*self.stft_hop_length/128
         end_time=(rand_int+ crop_size)*(self.stft_hop_length/128)
@@ -163,7 +164,7 @@ class babel_dataset(Dataset):
         crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1
         crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
         if self.if_range_aug:
-            rand_int_range = random.randint(8, 15)
+            rand_int_range = np.random.randint(8, 15)
             crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
         crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
         crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
@@ -191,7 +192,7 @@ class HumanML3DDataset(Dataset):
                  gpt_data_location="./exp7-8-3/6_prompts",
                  csv_path="./data/humanml3d_data/index.csv",
                  dataset_list=["ACCAD", "BioMotionLab_NTroje", "CMU", "EKUT"],
-                 crop_size=(224,256), img_size=(224,224), aug_ratio=1, if_use_gpt=True, if_range_aug=True):
+                 crop_size=(224,256), img_size=(224,224), aug_ratio=1, if_use_gpt=True, if_range_aug=True, use_category_alignment=False):
         self.crop_size = crop_size
         self.img_size = img_size
         self.hm_text_list=[]
@@ -203,7 +204,8 @@ class HumanML3DDataset(Dataset):
         self.text_paths=text_paths
         self.if_range_aug = if_range_aug
         self.if_use_gpt=if_use_gpt
-
+        self.use_category_alignment = use_category_alignment  # humanml3d does not offer category labels like babel, 
+        # but the data still needs to be fed to the dataloader in the same way, so we will just output an empty list for the categories
 
 
         for dataset_name in dataset_list:
@@ -279,7 +281,10 @@ class HumanML3DDataset(Dataset):
         if hm_td.shape[1] < self.crop_size[1]:
             crop_size = hm_td.shape[1]
 
-        rand_int=random.randint(0,hm_td.shape[1]-crop_size)
+        if hm_td.shape[1]-crop_size == 0:
+            rand_int = 0
+        else:
+            rand_int=np.random.randint(0,hm_td.shape[1]-crop_size)
         text_file = self.sync_map["{}/{}/{}/{}.npy".format("./pose_data", dataset_name, subject, action)]
         unique_frame_raw_text = self.read_text_label(
             "{}/{}".format(self.text_paths, text_file.replace("npy", "txt")))
@@ -292,14 +297,17 @@ class HumanML3DDataset(Dataset):
         if self.if_use_gpt:
             detailed_des=self.description_map[unique_frame_raw_text]
             text_candidate_num=len(detailed_des)
-            text_candiate_index=random.randint(0,text_candidate_num-1)
+            if text_candidate_num == 1:
+                text_candiate_index = 0
+            else:
+                text_candiate_index=np.random.randint(0,text_candidate_num-1)
 
         crop_img_td = hm_td[128 - self.crop_size[0] // 2:128 + self.crop_size[0] // 2, rand_int:  rand_int+ self.crop_size[1]]
         crop_img_td = cv2.resize(crop_img_td, self.img_size)
         crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1
         crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
         if self.if_range_aug:
-            rand_int_range = random.randint(8, 15)
+            rand_int_range = np.random.randint(8, 15)
             crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
         crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
         crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
@@ -309,6 +317,11 @@ class HumanML3DDataset(Dataset):
         crop_img=np.stack((crop_img_td, crop_img_tr, crop_img_ta), axis=0)
 
         if self.if_use_gpt:
+            if self.use_category_alignment:
+                return (crop_img,
+                    detailed_des[text_candiate_index],
+                    detailed_des[text_candiate_index],
+                    [])
             return (crop_img,
                     detailed_des[text_candiate_index],
                     detailed_des[text_candiate_index],
@@ -327,7 +340,7 @@ class babel_dataset_gpt(Dataset):
                  dataset_list=["ACCAD", "BioMotionLab_NTroje", "CMU", "EKUT"],
                  gpt_data_location="./exp7-8/6_prompts",
                  crop_size=(224,256), img_size=(224,224), if_range_aug=True, if_use_gpt=True,
-                 if_use_img=False, aug_ratio=1):
+                 if_use_img=False, aug_ratio=1, use_category_alignment=False):
         self.crop_size = crop_size
         self.img_size = img_size
         self.hm_text_list=[]
@@ -339,6 +352,7 @@ class babel_dataset_gpt(Dataset):
         self.if_use_gpt=if_use_gpt
         self.if_use_img=if_use_img
         self.aug_ratio = aug_ratio
+        self.use_category_alignment = use_category_alignment
         for dataset_name in dataset_list:
             with open("./{}/{}.pkl".format(label_dict_path, dataset_name), "rb") as f1:
                 self.label_dict[dataset_name]=pkl.load(f1)
@@ -400,16 +414,30 @@ class babel_dataset_gpt(Dataset):
             crop_size = hm_td.shape[1]
 
         # print(file_name, hm_td.shape[1])
-        rand_int = random.randint(0, hm_td.shape[1]-crop_size)
+        if hm_td.shape[1]-crop_size == 0:
+            rand_int = 0
+        else:
+            rand_int = np.random.randint(0, hm_td.shape[1]-crop_size)
         ##calculate labels
         start_time=rand_int*self.stft_hop_length/128
         end_time=(rand_int+ crop_size)*(self.stft_hop_length/128)
 
-        frame_raw_text=self.label_dict[dataset_name]["frame_raw_text_dict"][file_name][math.ceil(start_time):int(end_time)]
+        frame_raw_text=list(self.label_dict[dataset_name]["frame_raw_text_dict"][file_name][math.ceil(start_time):int(end_time)])
+        frame_raw_act_cats = list(self.label_dict[dataset_name]["frame_act_dict"][file_name][math.ceil(start_time):int(end_time)])
+        """
+        while "transition" in frame_raw_text:
+            frame_raw_text.remove("transition")
+        while "transition" in frame_raw_act_cats:
+            frame_raw_act_cats.remove("transition")
+        """
+        
         # unique_frame_raw_text=set(frame_raw_text)
         unique_frame_raw_text,_ = remove_duplicates(list(frame_raw_text))
+        unique_frame_raw_act_cats,_ = remove_duplicates(list(frame_raw_act_cats))
         while "transition" in unique_frame_raw_text:
             unique_frame_raw_text.remove("transition")
+        while "transition" in unique_frame_raw_act_cats:
+            unique_frame_raw_act_cats.remove("transition")
         if len(unique_frame_raw_text)==0:
             print(file_name)
         
@@ -420,7 +448,10 @@ class babel_dataset_gpt(Dataset):
             # these are the descriptions for each label within the frame, choose one at random as the representative for the frame
             detailed_des=self.description_map[unique_frame_raw_text]
             text_candidate_num=len(detailed_des)
-            text_candiate_index=random.randint(0,text_candidate_num-1)
+            if text_candidate_num == 1:
+                text_candiate_index = 0
+            else:
+                text_candiate_index=np.random.randint(0,text_candidate_num-1)
         
         # as long as the crop size is (256, *), the first piece of indexing will evaluate to 0:256 (the full height of the heatmap)
         crop_img_td = hm_td[128 - self.crop_size[0] // 2:128 + self.crop_size[0] // 2, rand_int:  rand_int+ self.crop_size[1]]
@@ -429,7 +460,7 @@ class babel_dataset_gpt(Dataset):
 
         crop_img_tr = hm_tr[:, rand_int:rand_int+ self.crop_size[1]]
         if self.if_range_aug:
-            rand_int_range = random.randint(8, 15)
+            rand_int_range = np.random.randint(8, 15)
             crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int_range, 0), crop_img_tr[:-rand_int]], axis=0)
         crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
         crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
@@ -450,17 +481,40 @@ class babel_dataset_gpt(Dataset):
                 rendered_img = Image.open(rendered_img_path)
                 img_list.append(rendered_img)
 
+        def find_matching_categories():
+            # print("Raw category labels: ", frame_raw_act_cats)
+            matched_categories = frame_raw_act_cats
+            # matched_category = max(set(matched_categories), key=matched_categories.count)
+            matched_category = []
+            weights = []
+            for label in set(matched_categories):
+                cats = label.split(",") if "," in label else [label]
+                weight = len([c for c in matched_categories if c == label]) / len(matched_categories)  # proportion of segment with that category
+                for cat in cats:
+                    weights.append(weight)
+                    matched_category.append(cat)
+            # print("Matched: ", matched_category)
+            return matched_category, weights
+
+        match_cat, weights = find_matching_categories()
+
         if self.if_use_gpt and self.if_use_img:
             return (crop_img,
                     img_list,
                     detailed_des[text_candiate_index],
                     detailed_des[text_candiate_index])
         if self.if_use_gpt:
+            if self.use_category_alignment:
+                return (crop_img,  # heatmaps
+                        detailed_des[text_candiate_index],
+                        detailed_des[text_candiate_index],  # activity label descriptions
+                        match_cat)
             return (crop_img,  # heatmaps
-                    detailed_des[text_candiate_index],  # activity label descriptions
-                    detailed_des[text_candiate_index],
-                    detailed_des[text_candiate_index])
-        if self.if_use_gpt==False and self.if_use_img:
+                detailed_des[text_candiate_index],  # activity label descriptions
+                detailed_des[text_candiate_index],
+                detailed_des[text_candiate_index])
+                # e.g. you could have something like 'hand movements,touching face,touching body part' - we should use all of these categories
+        if self.if_use_gpt==False and self.if_use_img: 
             return (crop_img,
                     img_list,
                     [unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text,unique_frame_raw_text],
@@ -470,6 +524,154 @@ class babel_dataset_gpt(Dataset):
                 unique_frame_raw_text,
                 [unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text, unique_frame_raw_text],
                 unique_frame_raw_text)
+    def __len__(self):
+        return len(self.hm_td_paths)*self.aug_ratio
+
+
+class babel_dataset_gpt_alltext(Dataset):
+    def __init__(self, data_paths=["./exp7-8/4_td_hms/"], label_dict_path="./exp7-8/1_segs_label_dict/",
+                 dataset_list=["ACCAD", "BioMotionLab_NTroje", "CMU", "EKUT"],
+                 gpt_data_location="./exp7-8/6_prompts",
+                 crop_size=(224,256), img_size=(224,224), if_range_aug=True, if_use_gpt=True,
+                 if_use_img=False, aug_ratio=1, use_category_alignment=False):
+        self.crop_size = crop_size
+        self.img_size = img_size
+        self.hm_text_list=[]
+        self.label_dict={}
+        self.hm_td_paths=[]
+        self.stft_win_length = 256
+        self.stft_hop_length = 16
+        self.if_range_aug=if_range_aug
+        self.if_use_gpt=if_use_gpt
+        self.if_use_img=if_use_img
+        self.aug_ratio = aug_ratio
+        self.use_category_alignment = use_category_alignment
+        for dataset_name in dataset_list:
+            with open("./{}/{}.pkl".format(label_dict_path, dataset_name), "rb") as f1:
+                self.label_dict[dataset_name]=pkl.load(f1)
+                frame_raw_text_dict = self.label_dict[dataset_name]["frame_raw_text_dict"]
+                for file_name, frame_raw_text in frame_raw_text_dict.items():
+                    if_skip_flag = False
+                    unique_frame_raw_text, time = remove_duplicates(list(frame_raw_text))
+                    for i, item in enumerate(unique_frame_raw_text):
+                        if item=="transition" and time[i]>=20:
+                            if_skip_flag=True
+                            break
+                    if if_skip_flag:
+                        continue
+                    while "transition" in unique_frame_raw_text:
+                        unique_frame_raw_text.remove("transition")
+                    if len(unique_frame_raw_text) == 0:
+                        continue
+                    unique_frame_raw_text, _ = remove_duplicates(unique_frame_raw_text)
+                    if len(unique_frame_raw_text) > 3:  ##can try different numbers
+                        continue
+                    ## manual filter
+                    cur_combinations=[]
+                    for i in range(1, len(unique_frame_raw_text) + 1):
+                        for j in range(len(unique_frame_raw_text) - i + 1):
+                            cur_combinations.append(" and ".join(unique_frame_raw_text[j:j+i]))
+                    if len(set(cur_combinations).intersection(set(elimination_list)))!=0:
+                        # print(set(cur_combinations).intersection(set(elimination_list)))
+                        continue
+
+                    for data_path in data_paths:
+                        if os.path.exists("{}/{}/{}__000degree_td.npy".format(data_path,dataset_name, file_name)):
+                            self.hm_td_paths.append("{}/{}/{}__000degree_td.npy".format(data_path,dataset_name, file_name))
+                        else:
+                            print("not used","{}/{}/{}__000degree_td.npy".format(data_path,dataset_name, file_name))
+        print("online dataset_length:", len(self.hm_td_paths)*self.aug_ratio)
+        gpt_text_file_paths=glob.glob("{}/babel_sample_04_03.txt".format(gpt_data_location))
+        self.description_list=[]#[[act_name, des_1, des_2, des_3, des_4], [], ...]
+        for gpt_text_file_path in gpt_text_file_paths:
+            single_description_list=read_gpt_data(gpt_text_file_path)
+            self.description_list.extend(single_description_list)
+        self.description_map={}
+        for description in self.description_list:
+            # description[0] = the activity label, description[1:] = gpt description for activity
+            if description[0] not in self.description_map.keys():
+                self.description_map[description[0]]=[]
+                self.description_map[description[0]].append(description[1:])
+            else:
+                self.description_map[description[0]].append(description[1:])
+    def __getitem__(self, index):
+        hm_td_path=self.hm_td_paths[int(index//self.aug_ratio)]
+        dataset_name=hm_td_path.split("/")[-2]
+        file_name=hm_td_path.split("/")[-1][:-18]
+
+        frame_raw_text = list(self.label_dict[dataset_name]["frame_raw_text_dict"][file_name])
+        frame_raw_act_cats = list(self.label_dict[dataset_name]["frame_act_dict"][file_name])
+        assert len(frame_raw_text) == len(frame_raw_act_cats)
+
+        while "transition" in frame_raw_text:
+            frame_raw_text.remove("transition")
+
+        while "transition" in frame_raw_act_cats:
+            frame_raw_act_cats.remove("transition")
+
+        # unique_frame_raw_text=set(frame_raw_text)
+        unique_frame_raw_text,_ = remove_duplicates(list(frame_raw_text))
+        unique_frame_raw_text_orig = list(unique_frame_raw_text)
+        unique_frame_raw_act_cats,_ = remove_duplicates(list(frame_raw_act_cats))
+
+        if len(unique_frame_raw_text)==0:
+            print(file_name)
+        
+        unique_frame_raw_text, _ = remove_duplicates(unique_frame_raw_text)
+        if len(unique_frame_raw_text) == 4:
+            print("found a len4 activity")
+        individual_seg_labels = []
+        if len(unique_frame_raw_text) > 1:
+            individual_seg_labels = list(unique_frame_raw_text)  # to deal with the bizarre "and" business below
+        pair_seg_labels = []
+        pair_seg_labels_orig = []
+        if len(unique_frame_raw_text) > 2:
+            for i in range(0, len(unique_frame_raw_text) - 1):
+                pair_seg_labels.append(unique_frame_raw_text[i] + " and " + unique_frame_raw_text[i+1])
+                pair_seg_labels_orig.append([unique_frame_raw_text[i], unique_frame_raw_text[i+1]])
+        unique_frame_raw_text=" and ".join(unique_frame_raw_text).lower()
+
+        def find_matching_categories(raw_text_labels):
+            for label in raw_text_labels:
+                assert label in [frame.lower() for frame in frame_raw_text], label
+            matched_categories = []
+            first = False
+            for text, cat in zip(frame_raw_text, frame_raw_act_cats):
+                if not first and text.lower() == raw_text_labels[0]:
+                    first = True
+                    matched_categories.append(cat)
+                elif first and text.lower() in raw_text_labels:
+                    matched_categories.append(cat)
+            #for cat in set(matched_categories):
+            #    print("Found", len([c for c in matched_categories if c == cat]), " of ", cat)
+            matched_category = max(set(matched_categories), key=matched_categories.count)
+            #print("Matched: ", matched_category)
+            return matched_category
+
+        match_cat = []
+        ## now find the mapping
+        if self.if_use_gpt:
+            detailed_des=self.description_map[unique_frame_raw_text]
+            for _ in range(len(detailed_des)):
+                match_cat.append(find_matching_categories(unique_frame_raw_text_orig))
+            if individual_seg_labels:
+                for label in individual_seg_labels:
+                    new = []
+                    new.extend(self.description_map[label])
+                    for _ in range(len(new)):
+                        match_cat.append(find_matching_categories([label]))
+                    detailed_des.extend(new)
+            if pair_seg_labels:
+                for frame_labels, label in zip(pair_seg_labels_orig, pair_seg_labels):
+                    new = []
+                    new.extend(self.description_map[label])
+                    for _ in range(len(new)):
+                        match_cat.append(find_matching_categories(frame_labels))
+                    detailed_des.extend(new)
+
+        return detailed_des, match_cat
+        
+        
     def __len__(self):
         return len(self.hm_td_paths)*self.aug_ratio
 
@@ -569,7 +771,10 @@ class local_dataset(Dataset):
         assert len(text) == 1  # should be one text per heatmap (one activity being performed in the heatmap)
         # print("Local dataset hm shape: ", img_td.shape)
         text_candidate_num=len(text)
-        text_candiate_index=random.randint(0,text_candidate_num-1)
+        if text_candidate_num == 1:
+            text_candiate_index = 0
+        else:
+            text_candiate_index=np.random.randint(0,text_candidate_num-1)
         trial_index = index-trial_no*self.seg_number_per_trial  # where to start within the current activity given the index
         
         full_crop_img = np.array([])
@@ -592,9 +797,9 @@ class local_dataset(Dataset):
                     hm_window = (trial_index*self.sampling_gap, trial_index*self.sampling_gap + self.crop_size[1])
                 else:
                     # random hm segment outside of initial hm window 
-                    random_start_idx_left = random.randint(0, hm_window[0]-self.crop_size[1]-1) if hm_window[0]-self.crop_size[1]-1 > 0 else -1
-                    random_start_idx_right = random.randint(hm_window[0]+self.crop_size[1], img_td.shape[1]-self.crop_size[1]) if hm_window[0]+self.crop_size[1] < img_td.shape[1]-self.crop_size[1] else -1
-                    random_start_idx = random.choice([start for start in [random_start_idx_left, random_start_idx_right] if start != -1])
+                    random_start_idx_left = np.random.randint(0, hm_window[0]-self.crop_size[1]-1) if hm_window[0]-self.crop_size[1]-1 > 0 else -1
+                    random_start_idx_right = np.random.randint(hm_window[0]+self.crop_size[1], img_td.shape[1]-self.crop_size[1]) if hm_window[0]+self.crop_size[1] < img_td.shape[1]-self.crop_size[1] else -1
+                    random_start_idx = np.random.choice([start for start in [random_start_idx_left, random_start_idx_right] if start != -1])
                     hm_window = (random_start_idx, random_start_idx+self.crop_size[1])
             num_hms_added += 1
             crop_img_td = img_td[128-self.crop_size[0]//2:128+self.crop_size[0]//2, hm_window[0]:hm_window[1]]
@@ -606,7 +811,7 @@ class local_dataset(Dataset):
 
             crop_img_tr = img_tr[:, hm_window[0]:hm_window[1]]
             if self.if_range_aug:
-                rand_int = random.randint(8, 15)
+                rand_int = np.random.randint(8, 15)
                 crop_img_tr =np.concatenate([np.repeat(crop_img_tr[0:1], rand_int, 0), crop_img_tr[:-rand_int]], axis=0)
             crop_img_tr = cv2.resize(crop_img_tr, self.img_size)
             crop_img_tr = 2*(crop_img_tr - np.min(crop_img_tr)) / (np.max(crop_img_tr) - np.min(crop_img_tr))-1
@@ -706,7 +911,7 @@ class local_dataset_fs(Dataset):
                 crop_img_td = 2 * (crop_img_td - np.min(crop_img_td)) / (np.max(crop_img_td) - np.min(crop_img_td)) - 1
                 crop_img_tr = img_tr[:, start_index+sample_id*sampling_gap:start_index+sample_id*sampling_gap+crop_size[1]]
                 if self.if_range_aug:
-                    rand_int = random.randint(8, 15)
+                    rand_int = np.random.randint(8, 15)
                     crop_img_tr = np.concatenate([np.repeat(crop_img_tr[0:1], rand_int, 0), crop_img_tr[:-rand_int]],
                                                  axis=0)
                 crop_img_tr = cv2.resize(crop_img_tr, self.img_size)

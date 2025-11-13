@@ -2,10 +2,15 @@
 Config file for pretraining run (train_babel_gpt_v2.py).
 """
 
-use_dynamic_similarity_matching = True
+use_dynamic_similarity_matching = False
+use_category_alignment = False
+lam = 1.0
+use_muon = False
+use_hmtext_cross_attention = True
 
 import numpy as np
 import pandas as pd
+from splits import splits
 def load_sync_list(infilename):
     sync_list = []
     csv_file = pd.read_csv(infilename, header=0)
@@ -46,9 +51,7 @@ trials_list.extend(["S1_02_034_00","S1_02_035_00","S1_02_036_00","S1_02_037_00",
 
 
 test_class_list=[
-    [2, 5, 7, 13, 14, 21, 26, 28, 30, 47],
-    [3, 4, 6, 8, 12, 17, 19, 25, 31, 33],
-    [1, 15, 18, 22, 27, 32, 37, 40, 43, 63],
+    split[0] for split in splits
 ]
 all_list=act_ids
 setting_list_babel=[
@@ -93,14 +96,17 @@ setting_list_babel=[
     "test_class_list": test_class_list,
     "if_use_hm": True,
     "if_use_hm_proj": False, "if_use_text_proj": False,
-    "if_use_text_att": True, "if_use_hm_att": True, "if_use_img_att": False,
+    "if_use_text_att": True, "if_use_hm_att": True, "if_use_img_att": False, "use_category_alignment": use_category_alignment,
+    "use_muon": use_muon,
     "use_dynamic_similarity_matching": use_dynamic_similarity_matching,
+    "use_hmtext_cross_attention": use_hmtext_cross_attention,
     "hm_type": [0, 1, 2],
     "batch_size": 16,
     "loss_type": "kl",
     "lr": 0.0001,
     "iteration_num": 50000,
     "gamma": 0.9,
+    "lambda": lam
     },
 
 ]

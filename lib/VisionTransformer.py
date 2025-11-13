@@ -50,7 +50,43 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
         x = self.forward_features(x)
         # x = self.forward_head(x)
         return x
+    
+class HMTextCrossAttention(nn.Module):
+    """
+    Basic implementation of bidirectional cross-attention with optional dropout.
+    forward() returns only the attention update vectors for each token in hm_tokens.
 
+    TODO change this to use the MGCA implementation (line 128: https://github.com/HKU-MedAI/MGCA/blob/main/mgca/models/mgca/mgca_module.py).
+    it throws out the q,k,v matrices entirely and uses a simple sum of tokens weighted by the dot product.
+    """
+
+    def __init__(self, hm_emb_dim, text_emb_dim, dropout=0.0, learn_qkv=False):
+        super(HMTextCrossAttention, self).__init__()
+        # self.proj = nn.Linear(hm_emb_dim, text_emb_dim)
+        self.text_emb_dim = text_emb_dim
+
+        self.Q = nn.Linear(text_emb_dim, text_emb_dim) if learn_qkv else nn.Identity()
+        self.K = nn.Linear(text_emb_dim, text_emb_dim) if learn_qkv else nn.Identity()
+        self.V = nn.Linear(text_emb_dim, text_emb_dim) if learn_qkv else nn.Identity()
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        
+    
+    def forward(self, hm_tokens, text_tokens, text_mask=None):
+        d = self.text_emb_dim
+        Q = self.Q(hm_tokens)  # len(hm_tokens)x768
+        K = self.K(text_tokens)  # len(text_tokens)x768
+        V = self.V(text_tokens)  # len(text_tokens)x768
+
+        attn_weights = torch.matmul(Q, K.transpose(-2, -1)) / (d**0.5)  # should be len(hm_tokens) x len(text_tokens)
+        if text_mask is not None:
+            attn_weights = attn_weights.masked_fill(text_mask.unsqueeze(1)==0, -1e9)
+        attn_weights = torch.softmax(attn_weights, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        attn_output = torch.matmul(attn_weights, V)  # (len(hm_tokens), len(text_tokens)) x (len(text_tokens, 768)) = len(hm_tokens)x768
+
+        return attn_output
+        
 
 class ViT_wo_patch_embed(timm.models.vision_transformer.VisionTransformer):
     """
@@ -132,7 +168,7 @@ class MB_ViT_v3(timm.models.vision_transformer.VisionTransformer):
         self.norm=norm_layer(embed_dim)
         self.pos_embed = nn.Parameter(torch.randn(1, int(224/4), int(3*128)) * .02)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, output_token_embs=False):
         # Heatmap encoder
         td_emd = self.td_encoder.forward_features(x[:, 0:1, ...])#->B*L*d
         tr_emd = self.tr_encoder.forward_features(x[:, 1:2, ...])
@@ -146,6 +182,8 @@ class MB_ViT_v3(timm.models.vision_transformer.VisionTransformer):
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)## added norm here
+        if output_token_embs:
+            return x[:, self.reg_tokens:]  # exclude the five class tokens and only return token (image patch) embs
         return x[:, 0:self.reg_tokens]  # return five attribute embeddings (5 class tokens)
 
 class MB_ViT_v3_shareweight(timm.models.vision_transformer.VisionTransformer):
