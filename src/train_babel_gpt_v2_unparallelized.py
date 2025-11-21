@@ -3,46 +3,8 @@ mmCLIP synthetic data pretraining code.
 
 """
 
-"""
-from transformers import CLIPModel, CLIPProcessor
-_ = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", force_download=True).requires_grad_(False)  # openai/clip-vit-large-patch14
-_ = CLIPProcessor.from_pretrained(
-    "openai/clip-vit-base-patch32", force_download=True)  # openai/clip-vit-large-patch14
-"""
-
-import warnings
-# warnings.filterwarnings("ignore")
-
-"""
 import os
-from transformers import CLIPModel, CLIPProcessor
-
-# Create a local models directory
-models_dir = "./models/clip-vit-large-patch14"
-os.makedirs(models_dir, exist_ok=True)
-
-# Download with explicit cache dir
-clip_model = CLIPModel.from_pretrained(
-    "openai/clip-vit-large-patch14",
-    cache_dir=models_dir,
-    local_files_only=False,
-    force_download=True
-)
-
-clip_processor = CLIPProcessor.from_pretrained(
-    "openai/clip-vit-large-patch14",
-    cache_dir=models_dir,
-    local_files_only=False,
-    force_download=True
-)
-
-# Save locally
-clip_model.save_pretrained(models_dir)
-clip_processor.save_pretrained(models_dir)
-exit(0)
-"""
-
-import os
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 import sys
 sys.path.append(".")
 import matplotlib.pyplot as plt
@@ -118,16 +80,10 @@ class MSE_Loss(nn.Module):
     def forward(self, prediction, label):
         loss = self.error_metric(prediction, label)
         return loss
-
-# pretraining data related  
+    
 text_embs = {}
 cat_embs = {}
 text_embs_actual = []
-
-# fine-tuning data related
-# text_to_trial_idx = {}
-# text_to_text_emb = {}
-# text_to_hm = {}
 
 """
     Given a list of activity labels (texts associated with the hms in a batch), convert it to a one-hot encoded matrix of label column vectors.
@@ -156,10 +112,6 @@ def gen_label(labels, text_features=None, category_labels=None, weights=None):
             elif text_features is not None:  # used for dynamic similarity matching which doesn't work very well
                 gt_hmtext[i, k] = text_features[match_idx, :] @ text_features[k, :]
         # normalization; only has effect when similarity matching is in use
-        if not any(gt_hmtext[i]):
-            print("Bad row found: ")
-            print(gt_hmtext)
-            print(labels)
         gt_hmtext[i] = (gt_hmtext[i] - gt_hmtext[i].min()) / (gt_hmtext[i].max() - gt_hmtext[i].min())
     
     if category_labels:
@@ -214,7 +166,7 @@ class KLLoss(nn.Module):
 
     def __init__(self):
         super().__init__()
-        # print('=========using KL Loss=and has temperature and * bz==========')
+        print('=========using KL Loss=and has temperature and * bz==========')
         self.error_metric = nn.KLDivLoss(reduction="batchmean")
 
     def forward(self, prediction, label):
@@ -238,46 +190,14 @@ def print_trainable_parameters(model):
 
 np.set_printoptions(suppress=True)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+device = torch.device('cuda:3')  # A5000 on csgpu1. A6000 on csgpu4
+print(f"Using device: {device}")
 
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
-
-def setup(rank, world_size):
-    dist.init_process_group(
-        backend='nccl',
-        init_method='tcp://localhost:46701',
-        world_size=world_size,
-        rank=rank
-    )
-
-def cleanup():
-    dist.destroy_process_group()
-
-def train(rank, world_size):
-    import logging
-    #logging.basicConfig(level=logging.DEBUG)
-    
-    os.environ['NCCL_DEBUG'] = 'WARN'
-    #os.environ['NCCL_BLOCKING_WAIT'] = '1'  # Make hangs obvious
-    setup(rank, world_size)
-    device = torch.device(f'cuda:{rank+4}')  # A5000 on csgpu1. A6000 on csgpu4
-    torch.cuda.set_device(device)
-
-    print(f"Rank {rank}: Setup complete")
-    
-    # Test basic CUDA operation
-    test = torch.randn(10, 10)
-    print(f"Rank {rank}: Created CPU tensor")
-    
-    test = test.to(device)
-    print(f"Rank {rank}: Moved test tensor to {device}")
-
+if __name__ == "__main__":
     exp_name = "babel_0505_5set"
     for setting_dict in setting_list_babel:
         exp_setting = setting_dict["exp_setting"]
-        if rank == 0:
-            print(exp_setting)
+        print(exp_setting)
         hm_type = setting_dict["hm_type"]
 
         if not setting_dict["if_use_img"]:
@@ -287,17 +207,14 @@ def train(rank, world_size):
                 assert "Please provide a valid model_type"
             elif setting_dict["model_type"] == "mmCLIP_gpt_multi_brach_property_v3":
                 mmclip = mmCLIP_gpt_multi_brach_property_v3(proj_head_dim=64,
-                                                            if_use_hm_proj=setting_dict["if_use_hm_proj"],
-                                                            if_use_text_proj=setting_dict["if_use_text_proj"],
-                                                            if_use_text_att=setting_dict["if_use_text_att"],
-                                                            if_use_hm_att=setting_dict["if_use_hm_att"],
-                                                            if_use_hm=setting_dict["if_use_hm"],
-                                                            device=device,
-                                                            in_channels=len(hm_type),
-                                                            if_use_hmtext_cross_attn=setting_dict["use_hmtext_cross_attention"])
-                mmclip = torch.nn.SyncBatchNorm.convert_sync_batchnorm(mmclip)
-                mmclip = mmclip.to(device)
-                mmclip = DDP(mmclip, device_ids=[rank+4], broadcast_buffers=True)
+                                                         if_use_hm_proj=setting_dict["if_use_hm_proj"],
+                                                         if_use_text_proj=setting_dict["if_use_text_proj"],
+                                                         if_use_text_att=setting_dict["if_use_text_att"],
+                                                         if_use_hm_att=setting_dict["if_use_hm_att"],
+                                                         if_use_hm=setting_dict["if_use_hm"],
+                                                         device=device,
+                                                         in_channels=len(hm_type),
+                                                         if_use_hmtext_cross_attn=setting_dict["use_hmtext_cross_attention"]).to(device)
             else:
                 assert "Please provide a valid model_type"
         else:
@@ -307,8 +224,7 @@ def train(rank, world_size):
                 assert "Please provide a valid model_type"
             else:
                 assert "Please provide a valid model_type"
-        if rank == 0:
-            print_trainable_parameters(mmclip)
+        print_trainable_parameters(mmclip)
 
         use_muon = setting_dict["use_muon"]
 
@@ -316,7 +232,7 @@ def train(rank, world_size):
             adam_params = []
             muon_params = []
 
-            for name, p in mmclip.module.named_parameters():
+            for name, p in mmclip.named_parameters():
                 if not p.requires_grad:
                     continue
                 if p.dim() == 2:
@@ -325,12 +241,12 @@ def train(rank, world_size):
                     adam_params.append(p)
 
             # Adam gradient descent optimizer
-            optimizer = torch.optim.Adam([{'params': adam_params, 'lr': world_size * setting_dict['lr']}])
+            optimizer = torch.optim.Adam([{'params': adam_params, 'lr': setting_dict['lr']}])
             optimizer_muon = torch.optim.Muon(muon_params)  # muon optimizer which ensures momentum updates are full-rank / orthogonal
             # muon also incorporates a weight decay as with AdamW
             scheduler_muon = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_muon, T_max=0.001)
         else:
-            optimizer = torch.optim.Adam([{'params': mmclip.module.parameters(), 'lr': world_size * setting_dict['lr']}])
+            optimizer = torch.optim.Adam([{'params': mmclip.parameters(), 'lr': setting_dict['lr']}])
 
         # Exponential learning rate decay at a rate of 0.9 per epoch to encourage model convergence later in training
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=setting_dict['gamma'])
@@ -348,15 +264,15 @@ def train(rank, world_size):
             paired with text activity label descriptions
             """
             ds_babel = babel_dataset_gpt(data_paths=setting_dict["babel_train_data_location"],
-                                label_dict_path=setting_dict["label_dict_path"],
-                                dataset_list=setting_dict["dataset_list"],
-                                gpt_data_location=setting_dict["babel_gpt_data_location"],
-                                crop_size=setting_dict["crop_size"],
-                                img_size=setting_dict["img_size"],
-                                if_range_aug=setting_dict['if_range_aug'],
-                                if_use_gpt=setting_dict["if_use_gpt"],
-                                if_use_img=setting_dict["if_use_img"],
-                                use_category_alignment=setting_dict["use_category_alignment"])
+                                   label_dict_path=setting_dict["label_dict_path"],
+                                   dataset_list=setting_dict["dataset_list"],
+                                   gpt_data_location=setting_dict["babel_gpt_data_location"],
+                                   crop_size=setting_dict["crop_size"],
+                                   img_size=setting_dict["img_size"],
+                                   if_range_aug=setting_dict['if_range_aug'],
+                                   if_use_gpt=setting_dict["if_use_gpt"],
+                                   if_use_img=setting_dict["if_use_img"],
+                                   use_category_alignment=setting_dict["use_category_alignment"])
             ds=ConcatDataset([ds, ds_babel])
         if setting_dict['if_use_sim_local']:
             # NOT USED DURING PRETRAINING
@@ -366,12 +282,12 @@ def train(rank, world_size):
             """
             train_classes_real = setting_dict["train_classes_real"]
             ds_local = local_dataset(trial_list=setting_dict["trial_list"], query_classes=train_classes_real,
-                            data_location=setting_dict["local_train_data_location"],
-                            gpt_data_location=setting_dict["gpt_data_location"],
-                            crop_size=setting_dict["crop_size"], ratio=setting_dict["train_ratio"],
-                            order=setting_dict["train_order"],
-                            img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
-                            if_range_aug=setting_dict["if_range_aug"])
+                               data_location=setting_dict["local_train_data_location"],
+                               gpt_data_location=setting_dict["gpt_data_location"],
+                               crop_size=setting_dict["crop_size"], ratio=setting_dict["train_ratio"],
+                               order=setting_dict["train_order"],
+                               img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap"],
+                               if_range_aug=setting_dict["if_range_aug"])
             ds = ConcatDataset([ds, ds_local])
         if setting_dict["if_use_humanml3d"]:
             """
@@ -392,17 +308,14 @@ def train(rank, world_size):
         if setting_dict["if_use_t2m"]:
             pass
 
-        sampler = DistributedSampler(
-            ds,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True
-        )   
+        use_intra_hm = False # setting_dict["num_hm_segs_per_activity"] > 1
 
-        sampler.set_epoch(0)
-
-        dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], # // world_size,
-                                drop_last=True, num_workers=4, prefetch_factor=2, pin_memory=False, sampler=sampler)
+        if use_intra_hm:
+            dl_train = DataLoader(ds, collate_fn=collate_ft_fn, batch_size=setting_dict["batch_size"], shuffle=True,
+                                drop_last=True, num_workers=4, prefetch_factor=2)
+        else:
+            dl_train = DataLoader(ds, collate_fn=collate_fn, batch_size=setting_dict["batch_size"], shuffle=True,
+                                drop_last=True, num_workers=4, prefetch_factor=2)
         dl_iter_train = iter(dl_train)
 
         test_class_list = setting_dict["test_class_list"]
@@ -410,71 +323,15 @@ def train(rank, world_size):
         for test_class in test_class_list:
             # Unseen test heatmap/activity label description pairs
             ds_val = local_dataset(trial_list=setting_dict["trial_list"], query_classes=test_class,
-                                data_location=setting_dict["local_test_data_location"],
-                                gpt_data_location=setting_dict["gpt_data_location"],
-                                crop_size=setting_dict["crop_size"], img_size=setting_dict["img_size"],
-                                ratio=setting_dict["test_ratio"], order=setting_dict["test_order"],
-                                sampling_gap=setting_dict["test_sampling_gap"])  # intrahm data turned off by default
-            sampler_val = DistributedSampler(
-                ds_val,
-                num_replicas=world_size,
-                rank=rank,
-                shuffle=False
-            )   
-            sampler_val.set_epoch(0)
-            dl_val = DataLoader(ds_val, collate_fn=collate_fn, batch_size=10, sampler=sampler_val, drop_last=False)
+                                   data_location=setting_dict["local_test_data_location"],
+                                   gpt_data_location=setting_dict["gpt_data_location"],
+                                   crop_size=setting_dict["crop_size"], img_size=setting_dict["img_size"],
+                                   ratio=setting_dict["test_ratio"], order=setting_dict["test_order"],
+                                   sampling_gap=setting_dict["test_sampling_gap"])  # intrahm data turned off by default
+            dl_val = DataLoader(ds_val, collate_fn=collate_fn, batch_size=10, shuffle=False, drop_last=False,
+                            num_workers=1,
+                            prefetch_factor=1)
             ds_dl_val_list.append([ds_val, dl_val])
-
-        train_classes_real = setting_dict["train_classes_real"]
-
-        def prefetch_ft_text_embs():
-            ds_bab = babel_dataset_gpt(data_paths=setting_dict["babel_train_data_location"],
-                                label_dict_path=setting_dict["label_dict_path"],
-                                dataset_list=setting_dict["dataset_list"],
-                                gpt_data_location=setting_dict["babel_gpt_data_location"],
-                                crop_size=setting_dict["crop_size"],
-                                img_size=setting_dict["img_size"],
-                                if_range_aug=setting_dict['if_range_aug'],
-                                if_use_gpt=setting_dict["if_use_gpt"],
-                                if_use_img=setting_dict["if_use_img"],
-                                use_category_alignment=setting_dict["use_category_alignment"])
-            # this can be done (to great success) with the finetuning dataset, but it breaks the zero-shot limitation
-            # possibly useful for future research with few-shot
-            """
-            ds_ft = local_dataset(trial_list=setting_dict["trial_list"], query_classes=train_classes_real,
-                            data_location=setting_dict["local_train_data_location"],
-                            gpt_data_location=setting_dict["gpt_data_location"],
-                            crop_size=setting_dict["crop_size"],ratio=setting_dict["train_ratio"], order=setting_dict["train_order"],
-                            img_size=setting_dict["img_size"], sampling_gap=setting_dict["train_sampling_gap_ft"])
-            """
-            text_to_text_emb = {}
-            text_to_hm = {}
-
-            if not (os.path.exists("./src/text_to_text_emb.pkl") and os.path.exists("./src/text_to_hm.pkl")):
-                for i in range(len(ds_bab)):
-                    if i % 100 == 0:
-                        print(f"Computing sample {i} / {len(ds_bab)}")
-                    sample = ds_bab[i]
-                    text = sample[1]
-                    hm = sample[0]
-                    label = tuple(list(text))
-
-                    if label not in text_to_text_emb:
-                        t_emb = mmclip.module.cal_text_features_2d([text])[0].detach().cpu()
-                        t_emb = t_emb / t_emb.norm(dim=-1, keepdim=True)
-
-                        hm = np.reshape(hm, (1, 3, 224, 224))
-                        hm = torch.from_numpy(hm).float().to(device)
-
-                        assert t_emb.shape == torch.Size([6, 768])
-                        text_to_text_emb.update({label: t_emb})
-                        text_to_hm.update({label: hm})
-                pickle.dump(text_to_text_emb, open("./src/text_to_text_emb.pkl", "wb"))
-                pickle.dump(text_to_hm, open("./src/text_to_hm.pkl", "wb"))
-            else:
-                text_to_text_emb = dict(pickle.load(open("./src/text_to_text_emb.pkl", "rb")))
-                text_to_hm = dict(pickle.load(open("./src/text_to_hm.pkl", "rb")))
-            return text_to_text_emb, text_to_hm
 
         def prefetch_text_embs():
             """
@@ -498,15 +355,15 @@ def train(rank, world_size):
             # only prefetch for babel dataset, because only babel dataset has category labels
             # babel_dataset_gpt_alltext only returns the texts for each hm
             ds_babel = babel_dataset_gpt_alltext(data_paths=setting_dict["babel_train_data_location"],
-                                label_dict_path=setting_dict["label_dict_path"],
-                                dataset_list=setting_dict["dataset_list"],
-                                gpt_data_location=setting_dict["babel_gpt_data_location"],
-                                crop_size=setting_dict["crop_size"],
-                                img_size=setting_dict["img_size"],
-                                if_range_aug=setting_dict['if_range_aug'],
-                                if_use_gpt=setting_dict["if_use_gpt"],
-                                if_use_img=setting_dict["if_use_img"],
-                                use_category_alignment=setting_dict["use_category_alignment"])
+                                   label_dict_path=setting_dict["label_dict_path"],
+                                   dataset_list=setting_dict["dataset_list"],
+                                   gpt_data_location=setting_dict["babel_gpt_data_location"],
+                                   crop_size=setting_dict["crop_size"],
+                                   img_size=setting_dict["img_size"],
+                                   if_range_aug=setting_dict['if_range_aug'],
+                                   if_use_gpt=setting_dict["if_use_gpt"],
+                                   if_use_img=setting_dict["if_use_img"],
+                                   use_category_alignment=setting_dict["use_category_alignment"])
             global text_embs_actual
             it = 0
             for i in range(len(ds_babel)):
@@ -521,7 +378,7 @@ def train(rank, world_size):
                     text_tup = tuple(text)
                     if text_tup in text_embs:
                         continue
-                    emb = mmclip.module.cal_text_features_2d([text])[0].detach().cpu()
+                    emb = mmclip.cal_text_features_2d([text])[0].detach().cpu()
                     text_embs_actual.append(emb)
                     text_embs.update({text_tup: it})
                     cat_frame = cat_frame.split(",") if "," in cat_frame else [cat_frame]
@@ -565,20 +422,19 @@ def train(rank, world_size):
         if not os.path.isdir("./src/{}/{}/".format(exp_name, exp_setting)):
             os.mkdir("./src/{}/{}/".format(exp_name, exp_setting))
 
-        if not os.path.isdir("./src/{}/{}/confusion_matrix/".format(exp_name, exp_setting)):
-            os.mkdir("./src/{}/{}/confusion_matrix/".format(exp_name, exp_setting))
+        if not os.path.isdir("./src/{}/{}/confusion_matrix_unpar/".format(exp_name, exp_setting)):
+            os.mkdir("./src/{}/{}/confusion_matrix_unpar/".format(exp_name, exp_setting))
 
-        log_file = open("./src/{}/{}/log_unseen.txt".format(exp_name, exp_setting), "w+")
+        log_file = open("./src/{}/{}/log_unseen_unpar.txt".format(exp_name, exp_setting), "w+")
         for key, value in setting_dict.items():
             log_file.writelines("{}:  {}\n".format(key, value))
-        if not os.path.isdir("./src/{}/{}/checkpoint_unseen".format(exp_name, exp_setting)):
-            os.mkdir("./src/{}/{}/checkpoint_unseen".format(exp_name, exp_setting))
+        if not os.path.isdir("./src/{}/{}/checkpoint_unseen_unpar".format(exp_name, exp_setting)):
+            os.mkdir("./src/{}/{}/checkpoint_unseen_unpar".format(exp_name, exp_setting))
         test_acc_list = []
         avg_test_acc_list=[]
         for i in range(len(ds_dl_val_list)):
             test_acc_list.append([])
 
-        use_intra_hm = setting_dict["use_intra_hm"]
         use_cat = setting_dict["use_category_alignment"]
 
         all_hmtext_loss = []
@@ -586,12 +442,6 @@ def train(rank, world_size):
             all_hmcat_loss = []
         if setting_dict["use_hmtext_cross_attention"]:
             all_ca_loss = []
-
-        if use_intra_hm:
-            print("\nPrefetching text embeddings from ft dataset....\n")
-            text_to_text_emb, text_to_hm = prefetch_ft_text_embs()
-            all_intrahm_loss = []
-            all_intratext_loss = []
 
         if use_cat:
             print("\nPrefetching text embeddings and generating category centroids...\n")
@@ -683,15 +533,9 @@ def train(rank, world_size):
             plt.ylabel('TSNE Dimension 2', fontsize=12)
             plt.legend(title='Label', bbox_to_anchor=(1.05, 1), loc='upper left')
             plt.tight_layout()
-            plt.savefig(f"./src/babel_0505_5set/tsne_{exp_setting[-1]}.png")
+            plt.savefig(f"./src/babel_0505_5set/tsne_{exp_setting[-1]}_unpar.png")
             plt.clf()
 
-        if use_intra_hm:
-            aux_embs = torch.stack(list(text_to_text_emb.values())).to(device)
-        
-        epoch = 0
-            
-        dist.barrier()
         while iteration <= iteration_num:
             """
             MAIN TRAINING LOOP
@@ -702,7 +546,7 @@ def train(rank, world_size):
                 if use_muon:
                     scheduler_muon.step()
 
-            if rank == 0 and iteration != 0 and (iteration % 1000 == 0 or (iteration % 50 == 0 and iteration < 200)):
+            if iteration != 0 and (iteration % 1000 == 0 or (iteration % 50 == 0 and iteration < 200)):
                 # get and log eval metrics five times per epoch
                 mmclip.eval()
                 top1_list=[]
@@ -714,7 +558,7 @@ def train(rank, world_size):
                         label_list = []
                         pred_list = []
                         # attribute + aggregated text embeddings of unseen test activity description
-                        eval_text_emd = mmclip.module.cal_text_features_2d(ds_val.inference_description_list)[
+                        eval_text_emd = mmclip.cal_text_features_2d(ds_val.inference_description_list)[
                             test_class_list[i_ds]]
                         eval_text_feature = eval_text_emd / eval_text_emd.norm(dim=-1, keepdim=True)  # normalize magnitude of vectors
                         if iteration == iteration_num: 
@@ -722,13 +566,13 @@ def train(rank, world_size):
                         for i, (hms, _, _, labels) in tqdm(enumerate(dl_val), desc="Computing batch"):
                             eval_hm_array = torch.from_numpy(hms[:, hm_type, ...]).float().to(device)
                             ## get features
-                            eval_hm_emd, _ = mmclip.module.cal_hm_features(eval_hm_array)
+                            eval_hm_emd, _ = mmclip.cal_hm_features(eval_hm_array)
                             ## normalize
                             eval_hm_feature = eval_hm_emd / eval_hm_emd.norm(dim=-1, keepdim=True)
                             if iteration == iteration_num:
                                 tsne_features_hm.extend(eval_hm_feature[:,-1,:].detach().cpu().numpy())
                             ## get prob and class label
-                            logit_scale = mmclip.module.logit_scale.exp()
+                            logit_scale = mmclip.logit_scale.exp()
                             # inference: dot product between heatmap embedding and candidate text label description embeddings
                             # to get cosine sim matrix
                             logits_per_image = logit_scale * eval_hm_feature[:,-1,:] @ eval_text_feature[:,-1,:].t()
@@ -759,7 +603,7 @@ def train(rank, world_size):
                         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=test_class_list[i_ds])
                         disp.plot()
                         plt.savefig(
-                            "./src/{}/{}/confusion_matrix/{:05d}_cm_{:02d}.png".format(exp_name, exp_setting, iteration, i_ds))
+                            "./src/{}/{}/confusion_matrix_unpar/{:05d}_cm_{:02d}.png".format(exp_name, exp_setting, iteration, i_ds))
                         plt.close()
                         test_acc_list[i_ds].append(top1_correct / total)
                         acc_quantile = np.quantile(test_acc_list[i_ds], .90)
@@ -775,19 +619,8 @@ def train(rank, world_size):
                 avg_acc_quantile = np.quantile(avg_test_acc_list, .90)
                 log_file.writelines("Iteration {}, top 1 avg {}, 90 quantile acc:{:5f}, max acc:{:5f} \n".format(iteration, np.mean(top1_list), avg_acc_quantile, max(avg_test_acc_list)))
                 log_file.flush()
-            if rank == 0 and iteration != 0 and iteration % 5000 == 0:
-                torch.save(mmclip.module.state_dict(), "./src/{}/{}/checkpoint_unseen/{:05d}_checkpoint.pt".format(exp_name, exp_setting, iteration))
-
-            def check_nan(name, tensor, rank, iteration):
-                if tensor is None:
-                    return False
-                if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-                    print(f"Rank {rank}, Iteration {iteration}: NaN/Inf in {name}")
-                    print(f"  Shape: {tensor.shape}")
-                    print(f"  Min: {tensor.min().item()}, Max: {tensor.max().item()}")
-                    print(f"  Mean: {tensor.mean().item()}")
-                    return True
-                return False
+            if iteration % 15000 == 0 or iteration % 30000 == 0 or iteration % 50000 == 0:
+                torch.save(mmclip.state_dict(), "./src/{}/{}/checkpoint_unseen_unpar/{:05d}_checkpoint.pt".format(exp_name, exp_setting, iteration))
 
             # get next batch from dataloader
             try:
@@ -801,11 +634,7 @@ def train(rank, world_size):
                 else:
                     hms, r_imgs, texts, _ = next(dl_iter_train)
             except StopIteration:
-                if rank == 0:
-                    print("new epoch")
-                epoch += 1
-                sampler.set_epoch(epoch)
-                sampler_val.set_epoch(epoch)
+                print("new epoch")
                 dl_iter_train = iter(dl_train)
                 if use_cat:
                     hms, texts, _, category_labels = next(dl_iter_train)
@@ -816,15 +645,13 @@ def train(rank, world_size):
             Calculate loss on current batch and backpropagate:
             """
 
-            hms = torch.from_numpy(hms[:, hm_type, ...]).float().to(device)
-            check_nan("input hms", hms, rank, iteration)
-            mmclip.module.train()
+            hms = torch.from_numpy(hms[:, hm_type, ...]).float().to(device)  ##
+            mmclip.train()
             optimizer.zero_grad()
             if use_muon:
                 optimizer_muon.zero_grad()
-                
-            hm_emds, _ = mmclip.module.cal_hm_features(hms)  # agg + attribute embeddings
-            
+
+            hm_emds, _ = mmclip.cal_hm_features(hms)  # agg + attribute embeddings
             """
             if use_cat:
                 # since we had to compute the category centroid embeddings, the text embeddings are
@@ -839,95 +666,20 @@ def train(rank, world_size):
                 text_emds = torch.stack(text_emds).to(device)
             else:
             """
-            text_emds = mmclip.module.cal_text_features_2d(texts)
-            if rank == 0 and iteration == 1:
-                check_nan("text_emds", text_emds, rank, iteration)
-
-            text_features = text_emds / text_emds.norm(dim=-1, keepdim=True)
-
-            if use_intra_hm:
-                #adj_heatmaps = []
-                adj_texts = []
-                for i in range(text_features.shape[0]):
-                    emb = text_features[i, ...]
-                    labels = list(text_to_text_emb.keys())
-                    sims = np.array([0 for _ in range(aux_embs.shape[0])])
-                    for j in range(6):
-                        s = (aux_embs[:, j, :] @ emb[j, :]).detach().cpu().numpy()
-                        sims = np.add(sims, s)
-                    sims /= 6
-                    sims_top = np.array(sims)
-                    sims_top_text = np.array(sims)
-                    # print([sims[k] for k in np.array(sims_top).argsort()[-20:][::-1]])
-
-                    k = setting_dict["k"]
-
-                    # sims_top_test = sims_top.argsort()[-2:][::-1]
-                    sims_top = np.argpartition(sims_top, -1-k)[-1-k:]  
-                    sims_top = sims_top[np.argsort(sims[sims_top])[::-1]] # faster than just argsort
-                    # assert list(sims_top_test) == list(sims_top), f"{sims_top_test}" + ", " + f"{sims_top}"
-
-                    # print(np.array(sims_top).argsort()[-20:][::-1])
-                    if round(sims[int(sims_top[0])], 5) == 1.00000:
-                        best_idx = int(sims_top[k])  # found the text emb matching the current text, don't use
-                    else:
-                        best_idx = int(sims_top[k-1])
-                    best_label = labels[best_idx]
-                    # print("Actual: ", texts[i])
-                    # print("Found: ", best_label)
-
-                    #adj_hm = text_to_hm[best_label]
-                    #adj_hm_emb, _ = mmclip.cal_hm_features(adj_hm)
-                    #adj_hm_emb = adj_hm_emb[0, ...].detach().cpu()
-                    #adj_hm_emb = adj_hm_emb / adj_hm_emb.norm(dim=-1, keepdim=True)
-
-                    adj_text_emb = text_to_text_emb[best_label]
-
-                    #adj_heatmaps.append(adj_hm_emb)
-                    adj_texts.append(adj_text_emb)
-
-                    """
-                    best_idx = np.argmax(sims)
-                    best_label = labels[best_idx]
-                    ft_ds_idx = np.random.choice(text_to_trial_idx[best_label])
-                    new_hm, text, _, _ = ft_ds[ft_ds_idx]
-                    new_hm = torch.tensor(np.reshape(new_hm, (1, 3, 224, 224)), dtype=hms.dtype, device=device)
-                    adj_hm_emb, _ = mmclip.cal_hm_features(new_hm)
-                    adj_hm_emb = adj_hm_emb[0, ...]
-                    adj_hm_emb = adj_hm_emb / adj_hm_emb.norm()
-                    adj_heatmaps.append(adj_hm_emb)
-                    """
-
-                #adj_hm_features = torch.stack(adj_heatmaps).to(device)
-                adj_text_features = torch.stack(adj_texts).to(device)
-                #assert adj_hm_features.shape == hm_emds.shape, adj_hm_features.shape
-                assert adj_text_features.shape == text_emds.shape, adj_text_features.shape
-
-                # we could happen to have the same embedding occur twice in a batch, so check
-                ground_truth_intrahm = torch.tensor(np.eye(hm_emds.shape[0]), dtype=hm_emds.dtype, device=device)
-                bs = adj_text_features.shape[0]
-                for i in range(bs):
-                    for j in range(bs):
-                        dot = adj_text_features[i, -1, :] @ adj_text_features[j, -1, :].t()
-                        dot = round(float(dot.item()), 5)
-                        if dot == 1.00000:
-                            ground_truth_intrahm[i, j] = 1
+            text_emds = mmclip.cal_text_features_2d(texts)
 
             if setting_dict["use_hmtext_cross_attention"]:
                 # these should be aligned
                 # expected shape: [16x56x768]  (batch_size x no. hm tokens x emb_dim)
-                hm_token_emds, hm_crossmodal_emds = mmclip.module.cal_hm_tokens_and_crossmodal_hm_features(texts, hms)
+                hm_token_emds, hm_crossmodal_emds = mmclip.cal_hm_tokens_and_crossmodal_hm_features(texts, hms)
 
-            logit_scale = mmclip.module.logit_scale.exp() # mmclip.module.logit_scale.clamp(max=100).exp()
-            if use_intra_hm:
-                logit_scale_intrahm = mmclip.module.logit_scale_intrahm.exp()
-                logit_scale_intratext = mmclip.module.logit_scale_intratext.exp()
+            logit_scale = mmclip.logit_scale.exp()
             if use_cat:
-                logit_scale_cat = mmclip.module.logit_scale_cat.exp()
+                logit_scale_cat = mmclip.logit_scale_cat.exp()
             if setting_dict["use_hmtext_cross_attention"]:
-                logit_scale_ca = mmclip.module.logit_scale_ca.exp()
+                logit_scale_ca = mmclip.logit_scale_ca.exp()
             hm_features = hm_emds / hm_emds.norm(dim=-1, keepdim=True)  # normalize magnitude of embeddings
-            
+            text_features = text_emds / text_emds.norm(dim=-1, keepdim=True)
             if use_cat:
                 category_labels_unique = []  # cannot use set() here because relative order must be preserved
                 for labels in category_labels:
@@ -956,8 +708,6 @@ def train(rank, world_size):
             all_loss = 0
             it_hmtext_loss = 0
             it_hmcat_loss = 0
-            it_intrahm_loss = 0
-            it_intratext_loss = 0
 
             if setting_dict["use_hmtext_cross_attention"]:
                 # 56x56 identity matrix as ground truth for crossmodal attention
@@ -989,7 +739,7 @@ def train(rank, world_size):
                     total_loss = (loss_imgs + loss_text) / 2  
                     it_hmtext_loss += total_loss
                     if setting_dict["if_use_img"] and i==hm_features.shape[1]-1:
-                        r_imgs_embds = mmclip.module.cal_img_features(r_imgs)
+                        r_imgs_embds = mmclip.cal_img_features(r_imgs)
                         r_img_features = r_imgs_embds / r_imgs_embds.norm(dim=-1, keepdim=True)
                         logits_per_hm_img = logit_scale * hm_features[:, i, :] @ r_img_features.t()
                         loss_hm_img = loss_ce(logits_per_hm_img, ground_truth)
@@ -1011,12 +761,6 @@ def train(rank, world_size):
                         # this matmul should be [no. of unique category labels in batch]x768 @ 768x16 = [no. of unique category labels in batch]x16
                         # intuitively, logits_hm_cat is the predicted similarity between each average category emb and each hm emb in the batch
                         logits_hm_cat = logit_scale_cat * cat_centroid_features[:, i, :] @ hm_features[:, i, :].t()
-                    elif use_intra_hm:
-                        ground_truth_intrahm = torch.tensor(np.eye(hm_features.shape[0]), dtype=hm_features.dtype, device=device)
-                        ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype, device=device)
-
-                        # logits_intra_hm = logit_scale_intrahm * adj_hm_features[:, i, :] @ hm_features[:, i, :].t()
-                        logits_intra_text = logit_scale_intratext * adj_text_features[:, i, :] @ hm_features[:, i, :].t()
                     else:
                         ground_truth = torch.tensor(gen_label(np.array(texts)[:, 0]), dtype=hm_features.dtype,
                                                         device=device)
@@ -1026,21 +770,11 @@ def train(rank, world_size):
                         it_hmcat_loss += setting_dict["lambda"] * loss_hm_cat
                         it_hmtext_loss += (1 - setting_dict["lambda"]) * loss_hm_text 
                         total_loss = (1 - setting_dict["lambda"]) * loss_hm_text + setting_dict["lambda"] * loss_hm_cat
-                    elif use_intra_hm:
-                        it_hmtext_loss += (1 - setting_dict["lambda"]) * loss_hm_text 
-                        # loss_intra_hm = loss_KL(logits_intra_hm, ground_truth_intrahm)
-                        loss_intra_text = loss_KL(logits_intra_text, ground_truth_intrahm)
-
-                        # it_intrahm_loss += setting_dict["lambda"] * loss_intra_hm
-                        it_intratext_loss += setting_dict["lambda"] * loss_intra_text
-
-                        loss_intra = loss_intra_text.item()
-                        total_loss = (1 - setting_dict["lambda"]) * loss_hm_text + setting_dict["lambda"] * loss_intra
                     else:
                         it_hmtext_loss += loss_hm_text
                         total_loss = loss_hm_text
                     if setting_dict["if_use_img"] and i==hm_features.shape[1]-1:
-                        r_imgs_embds = mmclip.module.cal_img_features(r_imgs)
+                        r_imgs_embds = mmclip.cal_img_features(r_imgs)
                         r_img_features = r_imgs_embds / r_imgs_embds.norm(dim=-1, keepdim=True)
                         logits_per_hm_img = logit_scale * hm_features[:, i, :] @ r_img_features.t()
                         loss_hm_img = loss_KL(logits_per_hm_img, ground_truth)
@@ -1049,7 +783,7 @@ def train(rank, world_size):
                 elif setting_dict["loss_type"] == "cos":
                     total_loss = loss_cos(text_features[:, i, :], hm_features[:, i, :])
                     if setting_dict["if_use_img"] and i==hm_features.shape[1]-1:
-                        r_imgs_embds = mmclip.module.cal_img_features(r_imgs)
+                        r_imgs_embds = mmclip.cal_img_features(r_imgs)
                         r_img_features = r_imgs_embds / r_imgs_embds.norm(dim=-1, keepdim=True)
                         loss_hm_img = loss_cos(r_img_features, hm_features[:, i, :])
                         total_loss+= setting_dict["img_loss_ratio"]*loss_hm_img
@@ -1061,48 +795,27 @@ def train(rank, world_size):
             if setting_dict["use_hmtext_cross_attention"]:
                 all_loss = (1 - setting_dict["lambda"]) * all_loss + setting_dict["lambda"] * hm_crossattention_loss
             all_loss.backward()  # Backpropagate through the model weights using differentiable loss function
-
-            #torch.nn.utils.clip_grad_norm_(mmclip.parameters(), max_norm=0.5)
-            #torch.nn.utils.clip_grad_value_(mmclip.parameters(), clip_value=0.5)
-
             optimizer.step()  # Update weights using Adam gradient descent optimizer
             if use_muon:
                 optimizer_muon.step()
-            
+
+            all_hmtext_loss.append(it_hmtext_loss.cpu().item()/6)
             if use_cat:
                 all_hmcat_loss.append(it_hmcat_loss.cpu().item()/6)
-            if use_intra_hm:
-                # all_intrahm_loss.append(it_intrahm_loss.cpu().item()/6)
-                all_intratext_loss.append(it_intratext_loss.cpu().item()/6)
 
             if iteration % 200 == 0:
-                dist.barrier()
-
-                print(rank, all_loss)
-
-                loss_tensor = all_loss.detach().clone()
-                dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-
-                all_hmtext_loss.append(loss_tensor.cpu().item() / world_size / 4)
-
-                if rank == 0:
-                    # for line in logits_per_image.softmax(dim=1).detach().cpu().numpy():
-                    #     print(line)
-                    print("iteration:{}, aggr emb loss:{:5f}".format(iteration, loss_tensor.cpu().item() / world_size / 4))
-                    log_file.writelines("iteration:{}, aggr emb loss:{:5f}\n".format(iteration, loss_tensor.cpu().item() / world_size / 4))
-                    print("iteration:{}, hm/text loss:{:5f}".format(iteration, loss_tensor.cpu().item() / world_size / 4))
-                    log_file.writelines("iteration:{}, hm_text loss:{:5f}\n".format(iteration, loss_tensor.cpu().item() / world_size / 4))
-                    if use_cat:
-                        print("iteration:{}, category alignment loss:{:5f}".format(iteration, it_hmcat_loss.cpu().item() / 6))
-                        log_file.writelines("iteration:{}, category alignment loss:{:5f}\n".format(iteration, it_hmcat_loss.cpu().item() / 6))
-                    if setting_dict["use_hmtext_cross_attention"]:
-                        print("iteration:{}, token alignment loss:{:5f}".format(iteration, hm_crossattention_loss.cpu().item() / hms.shape[0]))
-                        log_file.writelines("iteration:{}, token alignment loss:{:5f}\n".format(iteration, hm_crossattention_loss.cpu().item() / hms.shape[0]))
-                    if use_intra_hm:
-                        print("iteration:{}, intra text loss:{:5f}".format(iteration, it_intratext_loss.cpu().item() / 6))
-                        log_file.writelines("iteration:{}, intra text loss:{:5f}\n".format(iteration, it_intratext_loss.cpu().item() / 6))
-                        # print("iteration:{}, intra hm loss:{:5f}".format(iteration, it_intrahm_loss.cpu().item() / 6))
-                        # log_file.writelines("iteration:{}, intra hm loss:{:5f}\n".format(iteration, it_intrahm_loss.cpu().item() / 6))
+                # for line in logits_per_image.softmax(dim=1).detach().cpu().numpy():
+                #     print(line)
+                print("iteration:{}, aggr emb loss:{:5f}".format(iteration, total_loss.item()))
+                log_file.writelines("iteration:{}, aggr emb loss:{:5f}\n".format(iteration, total_loss.item()))
+                print("iteration:{}, hm/text loss:{:5f}".format(iteration, it_hmtext_loss.cpu().item() / 6))
+                log_file.writelines("iteration:{}, hm_text loss:{:5f}\n".format(iteration, it_hmtext_loss.cpu().item() / 6))
+                if use_cat:
+                    print("iteration:{}, category alignment loss:{:5f}".format(iteration, it_hmcat_loss.cpu().item() / 6))
+                    log_file.writelines("iteration:{}, category alignment loss:{:5f}\n".format(iteration, it_hmcat_loss.cpu().item() / 6))
+                if setting_dict["use_hmtext_cross_attention"]:
+                    print("iteration:{}, token alignment loss:{:5f}".format(iteration, hm_crossattention_loss.cpu().item() / hms.shape[0]))
+                    log_file.writelines("iteration:{}, token alignment loss:{:5f}\n".format(iteration, hm_crossattention_loss.cpu().item() / hms.shape[0]))
 
             if setting_dict["use_hmtext_cross_attention"]:
                 all_ca_loss.append(hm_crossattention_loss.cpu().item() / hms.shape[0])
@@ -1110,25 +823,14 @@ def train(rank, world_size):
             iteration += 1
 
         i = 0
-        if rank == 0:
-            for loss in [all_hmtext_loss]:
-                loss_avg = list(np.convolve(loss, np.ones(5) / 5, "valid"))
-                loss_avg.extend(loss[-4:])
-                plt.plot(loss)
-                plt.title("Heatmap to Text Contrastive Loss (5it Moving Average)")
-                plt.ylabel("Loss")
-                plt.xlabel("Iteration")
-                plt.savefig(f"./src/babel_0505_5set/loss_plot_hmtext_pt_{i}.png")
-                plt.clf()
-                i += 1
-        
-        cleanup()
+        for loss in [all_hmtext_loss]:
+            loss_avg = list(np.convolve(loss, np.ones(5) / 5, "valid"))
+            loss_avg.extend(loss[-4:])
+            plt.plot(loss)
+            plt.title("Heatmap to Text Contrastive Loss (5it Moving Average)")
+            plt.ylabel("Loss")
+            plt.xlabel("Iteration")
+            plt.savefig(f"./src/babel_0505_5set/loss_plot_hmtext_pt_{i}_unpar.png")
+            plt.clf()
+            i += 1
 
-if __name__ == '__main__':
-    world_size = 4  # Number of GPUs
-    torch.multiprocessing.spawn(
-        train,
-        args=(world_size,),
-        nprocs=world_size,
-        join=True
-    )
