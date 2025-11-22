@@ -1,7 +1,7 @@
 # Examining Signal-Text Contrastive Alignment for Zero-shot mmWave-based Human Activity Recognition
 
 #### Andrew Morgan
-#### Advised by Dr. Hongfei Xue
+#### Advised by Dr. Hongfei Xue, Dr. Xi Niu
 
 
 
